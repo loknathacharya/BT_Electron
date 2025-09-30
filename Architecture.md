@@ -479,7 +479,7 @@ MOVE DECISION: Proceed if IPC communication is working
 ### Sprint 2.1: File Upload and Preview (Days 8-10)
 **Build:**
 - File selection dialog
-- CSV/Excel file reader
+- CSV/Excel/Parquet file reader
 - Data preview table (first 10 rows)
 
 **Feature Tests:**

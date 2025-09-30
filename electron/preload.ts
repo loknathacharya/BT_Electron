@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Whitelist of allowed channels
     const validChannels = [
       'health-check',
+      'open-file-dialog',
+      'preview-file',
       'import-data',
       'run-backtest',
       'get-strategies',

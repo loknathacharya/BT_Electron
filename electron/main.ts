@@ -1,6 +1,6 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import { join } from 'path';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { spawn } from 'child_process';
 
 const isDev = process.env.NODE_ENV === 'development';
@@ -236,5 +236,143 @@ ipcMain.handle('ping-python', async () => {
     return await pythonService.sendToPython('ping');
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
+  }
+});
+
+// File dialog handler for opening file selection dialog
+ipcMain.handle('open-file-dialog', async () => {
+  try {
+    if (!mainWindow) {
+      throw new Error('Main window not available');
+    }
+
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openFile'],
+      filters: [
+        {
+          name: 'Data Files',
+          extensions: ['csv', 'xlsx', 'xls', 'parquet']
+        },
+        {
+          name: 'All Files',
+          extensions: ['*']
+        }
+      ]
+    });
+
+    if (result.canceled) {
+      return { canceled: true };
+    }
+
+    if (result.filePaths.length === 0) {
+      return { canceled: true };
+    }
+
+    const filePath = result.filePaths[0];
+    console.log('File selected:', filePath);
+
+    return {
+      canceled: false,
+      filePath: filePath
+    };
+  } catch (error) {
+    console.error('Error in open-file-dialog:', error);
+    return {
+      canceled: false,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+// File preview handler for reading and parsing CSV files
+ipcMain.handle('preview-file', async (_event, data) => {
+  try {
+    const { filePath } = data;
+
+    if (!filePath) {
+      throw new Error('No file path provided');
+    }
+
+    if (!existsSync(filePath)) {
+      throw new Error('File does not exist');
+    }
+
+    const fileContent = readFileSync(filePath, 'utf8');
+    const lines = fileContent.split('\n').filter(line => line.trim());
+
+    if (lines.length === 0) {
+      throw new Error('File is empty');
+    }
+
+    // Parse CSV (simple implementation)
+    const columns = lines[0].split(',').map(col => col.trim().replace(/"/g, ''));
+    const preview = [];
+    const maxPreviewRows = Math.min(10, lines.length - 1);
+
+    for (let i = 1; i <= maxPreviewRows; i++) {
+      const values = lines[i].split(',').map(val => val.trim().replace(/"/g, ''));
+      const row: any = {};
+
+      columns.forEach((col, index) => {
+        row[col] = values[index] || '';
+      });
+
+      preview.push(row);
+    }
+
+    console.log('File preview generated:', {
+      columns: columns.length,
+      previewRows: preview.length,
+      totalRows: lines.length - 1
+    });
+
+    return {
+      preview,
+      columns,
+      rows_total: lines.length - 1
+    };
+  } catch (error) {
+    console.error('Error in preview-file:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+// Import data handler for importing CSV data into database
+ipcMain.handle('import-data', async (_event, data) => {
+  try {
+    const { filePath, symbol } = data;
+
+    if (!filePath) {
+      throw new Error('No file path provided');
+    }
+
+    if (!existsSync(filePath)) {
+      throw new Error('File does not exist');
+    }
+
+    // Send to Python backend for processing
+    const result = await pythonService.sendToPython('import-data', {
+      file_path: filePath,
+      symbol: symbol
+    }) as any;
+
+    if (result.error) {
+      throw new Error(result.error);
+    }
+
+    console.log('Data import successful:', result);
+
+    return {
+      success: true,
+      rowsImported: result.rows_imported || 0,
+      symbol: symbol
+    };
+  } catch (error) {
+    console.error('Error in import-data:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
   }
 });

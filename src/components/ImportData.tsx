@@ -1,37 +1,85 @@
 import React, { useState } from 'react';
 
 const ImportData: React.FC = () => {
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [isDragOver, setIsDragOver] = useState(false);
+  const [filePath, setFilePath] = useState<string>('');
+  const [preview, setPreview] = useState<any[]>([]);
+  const [columns, setColumns] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string>('');
+  const [rowsTotal, setRowsTotal] = useState<number>(0);
+  const [importing, setImporting] = useState(false);
+  const [importSuccess, setImportSuccess] = useState<string>('');
 
-  const handleFileSelect = (file: File) => {
-    setSelectedFile(file);
-  };
+  const handleSelectFile = async () => {
+    if (!window.electronAPI) {
+      setError('Electron API not available. Running in browser?');
+      return;
+    }
 
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(true);
-  };
+    setLoading(true);
+    setError('');
 
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(false);
-  };
+    try {
+      const result = await window.electronAPI.invoke('open-file-dialog');
+      if (result.canceled) {
+        return;
+      }
+      if (result.error) {
+        throw new Error(result.error);
+      }
 
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(false);
+      const selectedPath = result.filePath;
+      setFilePath(selectedPath);
 
-    const files = Array.from(e.dataTransfer.files) as File[];
-    if (files.length > 0) {
-      handleFileSelect(files[0]);
+      // Preview the file
+      const previewResult = await window.electronAPI.invoke('preview-file', { filePath: selectedPath });
+      if (previewResult.error) {
+        throw new Error(previewResult.error);
+      }
+
+      setPreview(previewResult.preview || []);
+      setColumns(previewResult.columns || []);
+      setRowsTotal(previewResult.rows_total || 0);
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to select or preview file');
+      console.error('File selection error:', err);
+    } finally {
+      setLoading(false);
     }
   };
 
-  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (files && files.length > 0) {
-      handleFileSelect(files[0]);
+  const handleImportData = async () => {
+    if (!window.electronAPI || !filePath) {
+      setError('No file selected or Electron API not available');
+      return;
+    }
+
+    setImporting(true);
+    setError('');
+    setImportSuccess('');
+
+    try {
+      // Get the symbol from the input field
+      const symbolInput = document.getElementById('symbol') as HTMLInputElement;
+      const symbol = symbolInput?.value?.trim() || 'DEFAULT';
+
+      const result = await window.electronAPI.invoke('import-data', {
+        filePath,
+        symbol
+      });
+
+      if (result.error) {
+        throw new Error(result.error);
+      }
+
+      setImportSuccess(`Successfully imported ${result.rowsImported || 0} rows of ${symbol} data`);
+      console.log('Import successful:', result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to import data');
+      console.error('Import error:', err);
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -40,55 +88,70 @@ const ImportData: React.FC = () => {
       <div className="tab-header">
         <h2>Import Data</h2>
         <p>
-          Import your trading data from CSV files. The application supports OHLCV data
-          with timestamps. You can drag and drop files or browse to select them.
+          Import your trading data from CSV, Excel, or Parquet files. The application supports OHLCV data
+          with timestamps. Click below to select a file and preview its contents.
         </p>
       </div>
 
       <div className="import-section">
-        <div
-          className={`file-drop-zone ${isDragOver ? 'drag-over' : ''} ${
-            selectedFile ? 'has-file' : ''
-          }`}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
+        <button
+          className="btn"
+          onClick={handleSelectFile}
+          disabled={loading}
         >
-          {selectedFile ? (
-            <div className="file-selected">
-              <div className="file-icon">📄</div>
-              <div className="file-info">
-                <h3>{selectedFile.name}</h3>
-                <p>Size: {(selectedFile.size / 1024).toFixed(2)} KB</p>
-                <p>Type: {selectedFile.type || 'Unknown'}</p>
-              </div>
-              <button
-                className="btn btn-secondary"
-                onClick={() => setSelectedFile(null)}
-              >
-                Remove
-              </button>
-            </div>
-          ) : (
-            <div className="file-placeholder">
-              <div className="placeholder-icon">📊</div>
-              <h3>Drop your CSV file here</h3>
-              <p>or click to browse for files</p>
-              <input
-                type="file"
-                id="file-input"
-                accept=".csv,.xlsx,.xls"
-                onChange={handleFileInputChange}
-                style={{ display: 'none' }}
-              />
-              <label htmlFor="file-input" className="btn">
-                Select File
-              </label>
-            </div>
-          )}
-        </div>
+          {loading ? 'Loading...' : 'Select Data File'}
+        </button>
 
-        {selectedFile && (
+        {error && (
+          <div className="error-message" style={{ color: 'red', marginTop: '10px' }}>
+            {error}
+          </div>
+        )}
+
+        {importSuccess && (
+          <div className="success-message" style={{ color: 'green', marginTop: '10px' }}>
+            {importSuccess}
+          </div>
+        )}
+
+        {filePath && !loading && (
+          <div className="file-selected" style={{ marginTop: '20px' }}>
+            <h3>Selected: {filePath.split(/[\\/]/).pop()}</h3>
+            <p>Total rows: {rowsTotal}</p>
+          </div>
+        )}
+
+        {preview.length > 0 && (
+          <div className="preview-section" style={{ marginTop: '20px' }}>
+            <h3>Data Preview (First 10 Rows)</h3>
+            <div className="preview-table" style={{ overflowX: 'auto' }}>
+              <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+                <thead>
+                  <tr>
+                    {columns.map(col => (
+                      <th key={col} style={{ border: '1px solid #ddd', padding: '8px', backgroundColor: '#f2f2f2' }}>
+                        {col}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {preview.map((row, index) => (
+                    <tr key={index}>
+                      {columns.map(col => (
+                        <td key={col} style={{ border: '1px solid #ddd', padding: '8px' }}>
+                          {row[col] ?? ''}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {filePath && (
           <div className="import-controls">
             <div className="form-group">
               <label htmlFor="symbol">Symbol:</label>
@@ -100,73 +163,29 @@ const ImportData: React.FC = () => {
               />
             </div>
 
+            {/* Column mapping placeholder for Sprint 2.1 */}
             <div className="column-mapping">
-              <h3>Column Mapping</h3>
-              <p>Map your CSV columns to the required format:</p>
-
-              <div className="mapping-grid">
-                <div className="mapping-item">
-                  <label>Timestamp Column:</label>
-                  <select defaultValue="">
-                    <option value="">Select column...</option>
-                    <option value="date">Date</option>
-                    <option value="timestamp">Timestamp</option>
-                    <option value="datetime">DateTime</option>
-                  </select>
-                </div>
-
-                <div className="mapping-item">
-                  <label>Open Price Column:</label>
-                  <select defaultValue="">
-                    <option value="">Select column...</option>
-                    <option value="open">Open</option>
-                    <option value="open_price">Open Price</option>
-                  </select>
-                </div>
-
-                <div className="mapping-item">
-                  <label>High Price Column:</label>
-                  <select defaultValue="">
-                    <option value="">Select column...</option>
-                    <option value="high">High</option>
-                    <option value="high_price">High Price</option>
-                  </select>
-                </div>
-
-                <div className="mapping-item">
-                  <label>Low Price Column:</label>
-                  <select defaultValue="">
-                    <option value="">Select column...</option>
-                    <option value="low">Low</option>
-                    <option value="low_price">Low Price</option>
-                  </select>
-                </div>
-
-                <div className="mapping-item">
-                  <label>Close Price Column:</label>
-                  <select defaultValue="">
-                    <option value="">Select column...</option>
-                    <option value="close">Close</option>
-                    <option value="close_price">Close Price</option>
-                  </select>
-                </div>
-
-                <div className="mapping-item">
-                  <label>Volume Column (Optional):</label>
-                  <select defaultValue="">
-                    <option value="">Select column...</option>
-                    <option value="volume">Volume</option>
-                    <option value="vol">Vol</option>
-                  </select>
-                </div>
-              </div>
+              <h3>Column Mapping (Sprint 2.2)</h3>
+              <p>Preview shows standardized columns. Manual mapping coming soon.</p>
             </div>
 
             <div className="import-actions">
-              <button className="btn">Import Data</button>
+              <button
+                className="btn"
+                onClick={handleImportData}
+                disabled={!filePath || loading || importing}
+              >
+                {importing ? 'Importing...' : 'Import Data'}
+              </button>
               <button
                 className="btn btn-secondary"
-                onClick={() => setSelectedFile(null)}
+                onClick={() => {
+                  setFilePath('');
+                  setPreview([]);
+                  setColumns([]);
+                  setRowsTotal(0);
+                  setError('');
+                }}
               >
                 Cancel
               </button>
