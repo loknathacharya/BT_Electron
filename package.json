@@ -1,0 +1,64 @@
+{
+  "name": "byod-backtesting-app",
+  "version": "1.0.0",
+  "description": "BYOD Strategy Backtesting Application",
+  "main": "dist-electron/main.js",
+  "homepage": "./",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && tsc electron/main.ts electron/preload.ts --outDir dist-electron && vite build",
+    "preview": "vite preview",
+    "dist": "npm run build && electron-builder",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:linux": "npm run build && electron-builder --linux",
+    "test:foundation": "npm run build && electron .",
+    "test:ipc": "npm run build && node scripts/test-ipc.js",
+    "lint": "eslint src --ext ts,tsx --report-unused-disable-directives --max-warnings 0"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.8.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.0.28",
+    "@types/react-dom": "^18.0.11",
+    "@typescript-eslint/eslint-plugin": "^5.54.1",
+    "@typescript-eslint/parser": "^5.54.1",
+    "@vitejs/plugin-react": "^3.1.0",
+    "electron": "^25.0.0",
+    "electron-builder": "^23.6.0",
+    "eslint": "^8.35.0",
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "eslint-plugin-react-refresh": "^0.3.4",
+    "typescript": "^4.9.3",
+    "vite": "^4.1.0",
+    "vite-plugin-electron": "^0.11.1",
+    "vite-plugin-electron-renderer": "^0.12.1"
+  },
+  "build": {
+    "appId": "com.byod.backtesting",
+    "productName": "BYOD Backtesting",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+       "dist/**/*",
+       "dist-electron/**/*",
+       "backend/**/*"
+     ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "assets/icon.icns"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "assets/icon.png"
+    }
+  }
+}
