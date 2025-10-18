@@ -5,6 +5,7 @@ import './App.css';
 import ImportData from './components/ImportData';
 import BuildStrategy from './components/BuildStrategy';
 import ViewResults from './components/ViewResults';
+import Scanner from '@/components/Scanner';
 
 function Navigation() {
   const location = useLocation();
@@ -12,6 +13,7 @@ function Navigation() {
   const navItems = [
     { path: '/', label: 'Import Data' },
     { path: '/strategy', label: 'Build Strategy' },
+    { path: '/scanner', label: 'Scanner' },
     { path: '/data-management', label: 'Data Management' },
     { path: '/results', label: 'Results & Analysis' },
   ];
@@ -45,6 +47,7 @@ function AppContent() {
         <Routes>
           <Route path="/" element={<ImportData />} />
           <Route path="/strategy" element={<BuildStrategy />} />
+          <Route path="/scanner" element={<Scanner />} />
           <Route path="/data-management" element={<ViewResults />} />
           <Route path="/results" element={<ViewResults />} />
         </Routes>

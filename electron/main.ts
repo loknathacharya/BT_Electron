@@ -562,3 +562,25 @@ ipcMain.handle('create-dataset', async (_event, data) => {
     };
   }
 });
+
+// Run scanner handler (Phase 0 skeleton)
+ipcMain.handle('run-scan', async (_event, data) => {
+  try {
+    const { scannerSpec, options } = data || {};
+    const result = await pythonService.sendToPython('run-scan', {
+      scannerSpec: scannerSpec || {},
+      options: options || { latestOnly: true, limit: 5000 }
+    }) as any;
+
+    if (result.error) {
+      throw new Error(result.error);
+    }
+
+    return result;
+  } catch (error) {
+    console.error('Error in run-scan:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});

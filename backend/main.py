@@ -11,6 +11,7 @@ import datetime
 from pathlib import Path
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
+import numpy as np
 
 class DatabaseService:
     """SQLite database service for trading data with separate user and market databases"""
@@ -1474,6 +1475,316 @@ def handle_request(request, db_service_override=None):
                 if progress_reporter:
                     progress_reporter.report_summary(error_summary)
                 return error_summary
+        elif request.get('action') == 'run-scan':
+            # Phase 1: Basic scanner execution on latest daily bar
+            t0 = time.time()
+            try:
+                data = request.get('data', {}) or {}
+                scanner_spec = data.get('scannerSpec') or data.get('spec') or {}
+                options = data.get('options') or {}
+
+                if not isinstance(scanner_spec, dict):
+                    return {
+                        'error': 'Invalid scannerSpec: expected object',
+                        'requestId': request_id
+                    }
+
+                timeframe = str(scanner_spec.get('timeframe', '1D')).upper()
+                if timeframe != '1D':
+                    return {
+                        'error': f"Unsupported timeframe '{timeframe}' in Phase 1 (only '1D' supported)",
+                        'requestId': request_id
+                    }
+
+                universe = scanner_spec.get('universe', 'ALL')
+                # Determine symbols
+                symbols_list = []
+                with sqlite3.connect(current_db_service.market_db_path) as conn:
+                    if isinstance(universe, list) and len(universe) > 0:
+                        # Validate existence
+                        placeholders = ','.join('?' for _ in universe)
+                        cursor = conn.execute(f"SELECT DISTINCT symbol FROM price_data WHERE symbol IN ({placeholders}) ORDER BY symbol", tuple(universe))
+                    else:
+                        cursor = conn.execute("SELECT DISTINCT symbol FROM price_data ORDER BY symbol")
+                    symbols_list = [row[0] for row in cursor.fetchall()]
+
+                filters = scanner_spec.get('filters', []) or []
+                if not isinstance(filters, list):
+                    return { 'error': 'filters must be an array', 'requestId': request_id }
+
+                # Helper: evaluate filters for one symbol using pandas Series
+                def rsi(series: pd.Series, period: int = 14) -> pd.Series:
+                    delta = series.diff()
+                    gain = (delta.clip(lower=0)).ewm(alpha=1/period, adjust=False).mean()
+                    loss = (-delta.clip(upper=0)).ewm(alpha=1/period, adjust=False).mean()
+                    rs = np.where(loss == 0, np.nan, gain / loss)
+                    rsi_val = 100 - (100 / (1 + rs))
+                    return pd.Series(rsi_val, index=series.index)
+
+                def ema(series: pd.Series, period: int) -> pd.Series:
+                    return series.ewm(span=period, adjust=False).mean()
+
+                def sma(series: pd.Series, period: int) -> pd.Series:
+                    return series.rolling(window=period, min_periods=period).mean()
+
+                def macd_line(series: pd.Series, fast: int = 12, slow: int = 26):
+                    return ema(series, fast) - ema(series, slow)
+
+                def macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
+                    line = macd_line(series, fast, slow)
+                    sig = line.ewm(span=signal, adjust=False).mean()
+                    hist = line - sig
+                    return line, sig, hist
+
+                def atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
+                    prev_close = close.shift(1)
+                    tr = pd.concat([
+                        (high - low),
+                        (high - prev_close).abs(),
+                        (low - prev_close).abs()
+                    ], axis=1).max(axis=1)
+                    # Wilder smoothing (RMA)
+                    return tr.ewm(alpha=1/period, adjust=False).mean()
+
+                def bollinger(series: pd.Series, period: int = 20, std_mult: float = 2.0):
+                    mid = sma(series, period)
+                    std = series.rolling(window=period, min_periods=period).std()
+                    upper = mid + std_mult * std
+                    lower = mid - std_mult * std
+                    return mid, upper, lower
+
+                def adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
+                    # Wilder's ADX using pandas operations
+                    up_move = high.diff().astype(float)
+                    down_move = (-low.diff()).astype(float)
+                    plus_dm = up_move.where((up_move > down_move) & (up_move > 0.0), 0.0)
+                    minus_dm = down_move.where((down_move > up_move) & (down_move > 0.0), 0.0)
+                    prev_close = close.shift(1)
+                    tr = pd.concat([
+                        (high - low),
+                        (high - prev_close).abs(),
+                        (low - prev_close).abs()
+                    ], axis=1).max(axis=1)
+                    tr_rma = tr.ewm(alpha=1/period, adjust=False).mean()
+                    plus_dm_rma = plus_dm.ewm(alpha=1/period, adjust=False).mean()
+                    minus_dm_rma = minus_dm.ewm(alpha=1/period, adjust=False).mean()
+                    plus_di = 100 * (plus_dm_rma / tr_rma.replace(0, np.nan))
+                    minus_di = 100 * (minus_dm_rma / tr_rma.replace(0, np.nan))
+                    dx = (100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)).replace([np.inf, -np.inf], np.nan)
+                    adx_val = dx.ewm(alpha=1/period, adjust=False).mean()
+                    return adx_val
+
+                def vwap_cumulative(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series) -> pd.Series:
+                    # Cumulative VWAP over the series (approx for daily data)
+                    tp = (high + low + close) / 3.0
+                    vol = volume.fillna(0)
+                    cum_vol = vol.cumsum().replace(0, np.nan)
+                    return (tp * vol).cumsum() / cum_vol
+
+                def eval_measure(node, df: pd.DataFrame) -> pd.Series:
+                    if node is None:
+                        return pd.Series(dtype=float, index=df.index)
+                    if not isinstance(node, dict):
+                        return pd.Series(np.nan, index=df.index)
+                    ntype = node.get('type')
+                    offset = node.get('offset')
+                    def apply_offset(series: pd.Series) -> pd.Series:
+                        if isinstance(offset, dict) and offset.get('kind') == 'lookback':
+                            bars = int(offset.get('bars', 0))
+                            if bars > 0:
+                                return series.shift(bars)
+                        return series
+
+                    if ntype == 'const':
+                        val = float(node.get('value', 0))
+                        return pd.Series(val, index=df.index)
+                    if ntype == 'attr':
+                        name = node.get('name', '').lower()
+                        mapping = {
+                            'open': 'open', 'high': 'high', 'low': 'low', 'close': 'close', 'volume': 'volume'
+                        }
+                        if name not in mapping:
+                            return pd.Series(np.nan, index=df.index)
+                        return apply_offset(df[mapping[name]].astype(float))
+                    if ntype == 'func':
+                        fname = node.get('name', '').upper()
+                        period = int(node.get('period', 14))
+                        inner = eval_measure(node.get('measure'), df)
+                        if fname == 'MAX':
+                            return inner.rolling(window=period, min_periods=period).max()
+                        if fname == 'MIN':
+                            return inner.rolling(window=period, min_periods=period).min()
+                        return pd.Series(np.nan, index=df.index)
+                    if ntype == 'indicator':
+                        iname = node.get('name', '').upper()
+                        params = node.get('params', {}) or {}
+                        if iname == 'SMA':
+                            src = eval_measure(params.get('src') or {'type': 'attr', 'name': 'close'}, df)
+                            per = int(params.get('period', 20))
+                            return apply_offset(sma(src, per))
+                        if iname == 'EMA':
+                            src = eval_measure(params.get('src') or {'type': 'attr', 'name': 'close'}, df)
+                            per = int(params.get('period', 20))
+                            return apply_offset(ema(src, per))
+                        if iname == 'RSI':
+                            src = eval_measure(params.get('src') or {'type': 'attr', 'name': 'close'}, df)
+                            per = int(params.get('period', 14))
+                            return apply_offset(rsi(src, per))
+                        if iname == 'MACD':
+                            src = eval_measure(params.get('src') or {'type': 'attr', 'name': 'close'}, df)
+                            fast = int(params.get('fast', 12))
+                            slow = int(params.get('slow', 26))
+                            signal_p = int(params.get('signal', 9))
+                            out = str(params.get('output', 'line')).lower()
+                            line, sig, hist = macd(src, fast, slow, signal_p)
+                            out_map = {'line': line, 'signal': sig, 'hist': hist}
+                            return apply_offset(out_map.get(out, line))
+                        if iname == 'ATR':
+                            per = int(params.get('period', 14))
+                            return apply_offset(atr(df['high'], df['low'], df['close'], per))
+                        if iname in ('BB', 'BOLLINGER', 'BBANDS', 'BB_MIDDLE', 'BB_UPPER', 'BB_LOWER'):
+                            src = eval_measure(params.get('src') or {'type': 'attr', 'name': 'close'}, df)
+                            per = int(params.get('period', 20))
+                            mult = float(params.get('std', 2))
+                            mid, up, low_b = bollinger(src, per, mult)
+                            name_norm = iname
+                            if iname == 'BB_MIDDLE':
+                                return apply_offset(mid)
+                            if iname == 'BB_UPPER':
+                                return apply_offset(up)
+                            if iname == 'BB_LOWER':
+                                return apply_offset(low_b)
+                            # default return middle band
+                            return apply_offset(mid)
+                        if iname == 'ADX':
+                            per = int(params.get('period', 14))
+                            return apply_offset(adx(df['high'], df['low'], df['close'], per))
+                        if iname == 'VWAP':
+                            # Approximate cumulative VWAP in daily data
+                            return apply_offset(vwap_cumulative(df['high'], df['low'], df['close'], df['volume']))
+                        # Unknown indicator
+                        return pd.Series(np.nan, index=df.index)
+                    # Unknown node type
+                    return pd.Series(np.nan, index=df.index)
+
+                def eval_filter(node, df: pd.DataFrame) -> bool:
+                    if not isinstance(node, dict):
+                        return False
+                    op = node.get('op')
+                    if op == 'group':
+                        logic = node.get('logic', 'AND').upper()
+                        children = node.get('children', []) or []
+                        vals = [eval_filter(ch, df) for ch in children]
+                        return all(vals) if logic == 'AND' else any(vals)
+                    if op == 'not':
+                        return not eval_filter(node.get('child'), df)
+                    if op == 'compare':
+                        cmp_op = node.get('cmp')
+                        left = eval_measure(node.get('left'), df)
+                        right = eval_measure(node.get('right'), df)
+                        lv = float(left.iloc[-1]) if len(left) else np.nan
+                        rv = float(right.iloc[-1]) if len(right) else np.nan
+                        if np.isnan(lv) or np.isnan(rv):
+                            return False
+                        if cmp_op == '>':
+                            return lv > rv
+                        if cmp_op == '>=':
+                            return lv >= rv
+                        if cmp_op == '<':
+                            return lv < rv
+                        if cmp_op == '<=':
+                            return lv <= rv
+                        if cmp_op == '==':
+                            return abs(lv - rv) <= 1e-8
+                        if cmp_op == '!=':
+                            return abs(lv - rv) > 1e-8
+                        return False
+                    if op == 'crossover':
+                        cross_type = node.get('type', 'CROSSES_ABOVE').upper()
+                        left = eval_measure(node.get('left'), df)
+                        right = eval_measure(node.get('right'), df)
+                        if len(left) < 2 or len(right) < 2:
+                            return False
+                        l_prev, l_curr = left.iloc[-2], left.iloc[-1]
+                        r_prev, r_curr = right.iloc[-2], right.iloc[-1]
+                        if any(np.isnan([l_prev, l_curr, r_prev, r_curr])):
+                            return False
+                        if cross_type == 'CROSSES_ABOVE':
+                            return l_prev <= r_prev and l_curr > r_curr
+                        if cross_type == 'CROSSES_BELOW':
+                            return l_prev >= r_prev and l_curr < r_curr
+                        return False
+                    if op == 'arith':
+                        # Optional basic arithmetic chain; evaluate last value
+                        expr = node.get('expr', [])
+                        if not expr:
+                            return False
+                        # Evaluate into a stack of numbers / operators, then compute left-to-right
+                        vals = []
+                        for token in expr:
+                            if isinstance(token, dict):
+                                series = eval_measure(token, df)
+                                vals.append(float(series.iloc[-1]) if len(series) else np.nan)
+                            else:
+                                vals.append(token)
+                        # Compute
+                        try:
+                            acc = vals[0]
+                            i = 1
+                            while i < len(vals):
+                                op2 = vals[i]
+                                rhs = vals[i+1]
+                                if op2 == '+': acc = acc + rhs
+                                elif op2 == '-': acc = acc - rhs
+                                elif op2 == '*': acc = acc * rhs
+                                elif op2 == '/': acc = acc / rhs if rhs != 0 else np.nan
+                                i += 2
+                            # Non-zero truthiness
+                            return bool(acc) and not np.isnan(acc)
+                        except Exception:
+                            return False
+                    # Unknown op
+                    return False
+
+                results = []
+                scanned = 0
+                with sqlite3.connect(current_db_service.market_db_path) as conn:
+                    for sym in symbols_list:
+                        scanned += 1
+                        cursor = conn.execute(
+                            "SELECT timestamp, open, high, low, close, volume FROM price_data WHERE symbol = ? ORDER BY timestamp ASC",
+                            (sym,)
+                        )
+                        rows = cursor.fetchall()
+                        if not rows:
+                            continue
+                        df = pd.DataFrame(rows, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                        df = df.set_index(pd.to_datetime(df['timestamp'], unit='s'))
+                        # Evaluate all filters; top-level 'filters' is AND of entries
+                        match_all = True
+                        for fnode in filters:
+                            if not eval_filter(fnode, df):
+                                match_all = False
+                                break
+                        if match_all:
+                            results.append({
+                                'symbol': sym,
+                                'timestamp': int(df['timestamp'].iloc[-1])
+                            })
+
+                return {
+                    'results': results,
+                    'stats': {
+                        'scannedSymbols': scanned,
+                        'timeMs': int((time.time() - t0) * 1000)
+                    },
+                    'requestId': request_id
+                }
+            except Exception as e:
+                return {
+                    'error': f'run-scan failed: {str(e)}',
+                    'requestId': request_id
+                }
         else:
             return {
                 'error': 'Unknown action',
