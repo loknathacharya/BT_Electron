@@ -397,7 +397,7 @@ ipcMain.handle('preview-file', async (_event, data) => {
 // Import data handler for importing CSV data into database
 ipcMain.handle('import-data', async (_event, data) => {
   try {
-    const { filePath, symbol, columnMapping, incremental } = data;
+    const { filePath, symbol, columnMapping, incremental, dataset_name, dataset_description } = data;
 
     if (!filePath) {
       throw new Error('No file path provided');
@@ -412,7 +412,9 @@ ipcMain.handle('import-data', async (_event, data) => {
       file_path: filePath,
       symbol: symbol || 'DEFAULT',
       column_mapping: columnMapping || {},
-      incremental: incremental !== undefined ? incremental : true  // Default to true if not specified
+      incremental: incremental !== undefined ? incremental : true,  // Default to true if not specified
+      dataset_name: dataset_name || '',
+      dataset_description: dataset_description || ''
     }) as any;
 
     if (result.error) {
@@ -472,6 +474,89 @@ ipcMain.handle('get-price-data', async (_event, data) => {
     return result;
   } catch (error) {
     console.error('Error in get-price-data:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+// Generic IPC handler for dataset operations
+ipcMain.handle('get-datasets', async () => {
+  try {
+    const result = await pythonService.sendToPython('get-datasets') as any;
+
+    if (result.error) {
+      throw new Error(result.error);
+    }
+
+    console.log('Datasets retrieved successfully:', {
+      count: result.datasets?.length || 0
+    });
+
+    return result;
+  } catch (error) {
+    console.error('Error in get-datasets:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+// Get specific dataset handler
+ipcMain.handle('get-dataset', async (_event, data) => {
+  try {
+    const { dataset_name } = data;
+
+    if (!dataset_name) {
+      throw new Error('No dataset name provided');
+    }
+
+    const result = await pythonService.sendToPython('get-dataset', {
+      dataset_name
+    }) as any;
+
+    if (result.error) {
+      throw new Error(result.error);
+    }
+
+    console.log('Dataset retrieved successfully:', {
+      dataset_name
+    });
+
+    return result;
+  } catch (error) {
+    console.error('Error in get-dataset:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+// Create dataset handler
+ipcMain.handle('create-dataset', async (_event, data) => {
+  try {
+    const { dataset_name, dataset_description } = data;
+
+    if (!dataset_name) {
+      throw new Error('No dataset name provided');
+    }
+
+    const result = await pythonService.sendToPython('create-dataset', {
+      dataset_name,
+      dataset_description: dataset_description || ''
+    }) as any;
+
+    if (result.error) {
+      throw new Error(result.error);
+    }
+
+    console.log('Dataset created successfully:', {
+      dataset_name
+    });
+
+    return result;
+  } catch (error) {
+    console.error('Error in create-dataset:', error);
     return {
       error: error instanceof Error ? error.message : String(error)
     };

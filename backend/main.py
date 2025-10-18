@@ -1102,7 +1102,9 @@ def handle_request(request, db_service_override=None):
         elif request.get('action') == 'get-dataset':
             """Get specific dataset by name"""
             try:
-                dataset_name = request.get('data', {}).get('name')
+                # Check both 'dataset_name' and 'name' for compatibility
+                data = request.get('data', {})
+                dataset_name = data.get('dataset_name') or data.get('name')
                 if not dataset_name:
                     return {
                         'error': 'Dataset name is required',
@@ -1120,8 +1122,9 @@ def handle_request(request, db_service_override=None):
             """Create a new dataset with metadata"""
             try:
                 data = request.get('data', {})
-                dataset_name = data.get('name')
-                description = data.get('description', '')
+                # Check both 'dataset_name' and 'name' for compatibility
+                dataset_name = data.get('dataset_name') or data.get('name')
+                description = data.get('dataset_description') or data.get('description', '')
                 
                 if not dataset_name:
                     return {
