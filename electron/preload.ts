@@ -38,7 +38,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Add other IPC methods as needed
   on: (channel: string, callback: (...args: any[]) => void) => {
-    const validChannels = ['progress-update', 'error-occurred'];
+    const validChannels = ['progress-update', 'error-occurred', 'import-progress'];
 
     if (validChannels.includes(channel)) {
       ipcRenderer.on(channel, callback);

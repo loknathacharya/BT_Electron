@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import { join } from 'path';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync } from 'fs';
 import { spawn } from 'child_process';
 
 const isDev = process.env.NODE_ENV === 'development';
@@ -10,7 +10,8 @@ let mainWindow: BrowserWindow | null = null;
 // M2.5 — Main → Python: Python service for backend communication
 class PythonService {
   private pythonProcess: any = null;
-  // private pendingRequests = new Map(); // Reserved for future use
+  private pendingRequests = new Map();
+  private requestId = 0;
 
   async start() {
     const pythonScript = join(process.cwd(), 'backend', 'main.py');
@@ -21,23 +22,62 @@ class PythonService {
     });
 
     this.pythonProcess.stdout.on('data', (data: Buffer) => {
-      try {
-        const response = JSON.parse(data.toString());
-        console.log('Python response:', response);
-        // Handle response if needed
-      } catch (e) {
-        console.log('Python stdout:', data.toString());
-      }
-    });
+       const output = data.toString().trim();
+
+       try {
+         const response = JSON.parse(output);
+
+         // Handle progress events and forward to renderer
+         if (response.type === 'import-progress' || response.type === 'import-summary') {
+           console.log('IMPORT-PROGRESS:', response);
+           if (mainWindow && !mainWindow.isDestroyed()) {
+             mainWindow.webContents.send('import-progress', response);
+           }
+           // Also resolve the request if it's a final summary
+           if (response.type === 'import-summary') {
+             const requestId = response.requestId;
+             if (requestId && this.pendingRequests.has(requestId)) {
+               const resolve = this.pendingRequests.get(requestId);
+               this.pendingRequests.delete(requestId);
+               resolve(response);
+             }
+           }
+         } else {
+           // Handle regular responses by resolving pending requests
+           const requestId = response.requestId;
+           if (requestId && this.pendingRequests.has(requestId)) {
+             const resolve = this.pendingRequests.get(requestId);
+             this.pendingRequests.delete(requestId);
+             resolve(response);
+           }
+         }
+       } catch (e) {
+         // Only log import-related stderr output
+         if (output && (output.includes('IMPORT:') || output.includes('DEBUG:') || output.includes('Starting') || output.includes('File') || output.includes('Database'))) {
+           console.log('PYTHON:', output);
+         }
+       }
+     });
 
     this.pythonProcess.stderr.on('data', (data: Buffer) => {
       console.error('Python stderr:', data.toString());
     });
 
     this.pythonProcess.on('close', (code: number) => {
-      console.log('Python process exited with code', code);
-      this.pythonProcess = null;
-    });
+       console.log('Python process exited with code', code);
+       console.log('DEBUG: Pending requests count before cleanup:', this.pendingRequests.size);
+       this.pythonProcess = null;
+       // Reject all pending requests
+       this.pendingRequests.forEach((resolve, _requestId) => {
+         console.log('DEBUG: Rejecting pending request');
+         resolve({
+           error: 'Python process terminated',
+           code: code
+         });
+       });
+       this.pendingRequests.clear();
+       console.log('DEBUG: All pending requests cleared');
+     });
 
     return new Promise((resolve, reject) => {
       setTimeout(() => {
@@ -56,25 +96,58 @@ class PythonService {
       await this.start();
     }
 
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+      const requestId = ++this.requestId;
       const request = {
         action,
         data,
+        requestId,
         timestamp: new Date().toISOString()
       };
 
-      this.pythonProcess.stdin.write(JSON.stringify(request) + '\n');
-      console.log('Sent to Python:', request);
+      // Set a timeout for the request
+      const timeout = setTimeout(() => {
+        this.pendingRequests.delete(requestId);
+        if (action === 'import-data') {
+          console.error(`Python request timeout for action: ${action}, requestId: ${requestId}`);
+          console.error(`Request details:`, request);
+          console.error(`Python process alive: ${this.pythonProcess ? 'yes' : 'no'}`);
+          console.error(`Pending requests count at timeout: ${this.pendingRequests.size}`);
+          console.error(`Process PID: ${this.pythonProcess.pid}`);
+          console.error(`Process stdin writeable: ${this.pythonProcess.stdin?.writable}`);
+          console.error(`Process stdout readable: ${this.pythonProcess.stdout?.readable}`);
+          console.error(`Process stderr readable: ${this.pythonProcess.stderr?.readable}`);
+        }
+        reject(new Error(`Python request timeout for action: ${action}`));
+      }, action === 'import-data' ? 300000 : 60000); // 5 minutes for import, 60 seconds for others
 
-      // For now, return a mock response since we're not handling responses properly
-      setTimeout(() => {
-        resolve({
-          status: 'ok',
-          message: 'Request sent to Python backend',
-          action,
-          python_alive: true
+      // Store the resolve function with timeout cleanup
+      this.pendingRequests.set(requestId, (response: any) => {
+        clearTimeout(timeout);
+        if (action === 'import-data') {
+          console.log(`IMPORT-RESPONSE: Received response for import-data request ${requestId}`);
+        }
+        resolve(response);
+      });
+
+      if (action === 'import-data') {
+        console.log('IMPORT-DEBUG: Sending import-data to Python:', request);
+        console.log('IMPORT-DEBUG: Python process state before write:', {
+          pid: this.pythonProcess.pid,
+          stdinWritable: this.pythonProcess.stdin?.writable,
+          stdoutReadable: this.pythonProcess.stdout?.readable,
+          stderrReadable: this.pythonProcess.stderr?.readable
         });
-      }, 100);
+      }
+      this.pythonProcess.stdin.write(JSON.stringify(request) + '\n');
+      if (action === 'import-data') {
+        console.log(`IMPORT-DEBUG: Sent to Python, pending requests count: ${this.pendingRequests.size}`);
+        console.log('IMPORT-DEBUG: Python process state after write:', {
+          stdinWritable: this.pythonProcess.stdin?.writable,
+          stdoutReadable: this.pythonProcess.stdout?.readable,
+          stderrReadable: this.pythonProcess.stderr?.readable
+        });
+      }
     });
   }
 
@@ -193,7 +266,7 @@ app.on('web-contents-created', (_, contents) => {
 
 // IPC handlers for basic functionality
 ipcMain.handle('health-check', async () => {
-  // M2.6 — Full Chain: Health check with Python backend
+  // M2.6 — Full Chain: Health check with Python backend (silent for debugging)
   try {
     const pythonHealth = await pythonService.sendToPython('health-check');
     const fs = require('fs');
@@ -297,40 +370,22 @@ ipcMain.handle('preview-file', async (_event, data) => {
       throw new Error('File does not exist');
     }
 
-    const fileContent = readFileSync(filePath, 'utf8');
-    const lines = fileContent.split('\n').filter(line => line.trim());
+    // Use Python backend for file preview
+    const result = await pythonService.sendToPython('preview-file', {
+      file_path: filePath
+    }) as any;
 
-    if (lines.length === 0) {
-      throw new Error('File is empty');
+    if (result.error) {
+      throw new Error(result.error);
     }
 
-    // Parse CSV (simple implementation)
-    const columns = lines[0].split(',').map(col => col.trim().replace(/"/g, ''));
-    const preview = [];
-    const maxPreviewRows = Math.min(10, lines.length - 1);
-
-    for (let i = 1; i <= maxPreviewRows; i++) {
-      const values = lines[i].split(',').map(val => val.trim().replace(/"/g, ''));
-      const row: any = {};
-
-      columns.forEach((col, index) => {
-        row[col] = values[index] || '';
-      });
-
-      preview.push(row);
-    }
-
-    console.log('File preview generated:', {
-      columns: columns.length,
-      previewRows: preview.length,
-      totalRows: lines.length - 1
+    console.log('File preview generated via Python:', {
+      columns: result.columns?.length || 0,
+      previewRows: result.preview?.length || 0,
+      totalRows: result.rows_total || 0
     });
 
-    return {
-      preview,
-      columns,
-      rows_total: lines.length - 1
-    };
+    return result;
   } catch (error) {
     console.error('Error in preview-file:', error);
     return {
@@ -342,7 +397,7 @@ ipcMain.handle('preview-file', async (_event, data) => {
 // Import data handler for importing CSV data into database
 ipcMain.handle('import-data', async (_event, data) => {
   try {
-    const { filePath, symbol } = data;
+    const { filePath, symbol, columnMapping } = data;
 
     if (!filePath) {
       throw new Error('No file path provided');
@@ -352,10 +407,11 @@ ipcMain.handle('import-data', async (_event, data) => {
       throw new Error('File does not exist');
     }
 
-    // Send to Python backend for processing
+    // Send to Python backend for processing with column mapping
     const result = await pythonService.sendToPython('import-data', {
       file_path: filePath,
-      symbol: symbol
+      symbol: symbol || 'DEFAULT',
+      column_mapping: columnMapping || {}
     }) as any;
 
     if (result.error) {
@@ -366,11 +422,49 @@ ipcMain.handle('import-data', async (_event, data) => {
 
     return {
       success: true,
-      rowsImported: result.rows_imported || 0,
-      symbol: symbol
+      rowsImported: result.rowsImported || result.rows_imported || 0,
+      rowsSkipped: result.rowsSkipped || result.rows_skipped || 0,
+      symbol: symbol || 'DEFAULT',
+      timeElapsed: result.timeElapsed || result.time_elapsed || 0,
+      validationWarnings: result.validationWarnings || result.validation_warnings || []
     };
   } catch (error) {
     console.error('Error in import-data:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+// Get price data handler for viewing imported data
+ipcMain.handle('get-price-data', async (_event, data) => {
+  try {
+    const { symbol, limit = 1000, offset = 0 } = data;
+
+    if (!symbol) {
+      throw new Error('No symbol provided');
+    }
+
+    // Send to Python backend for database query
+    const result = await pythonService.sendToPython('get-price-data', {
+      symbol,
+      limit,
+      offset
+    }) as any;
+
+    if (result.error) {
+      throw new Error(result.error);
+    }
+
+    console.log('Price data retrieved successfully:', {
+      symbol,
+      count: result.data?.length || 0,
+      symbols: result.symbols?.length || 0
+    });
+
+    return result;
+  } catch (error) {
+    console.error('Error in get-price-data:', error);
     return {
       error: error instanceof Error ? error.message : String(error)
     };

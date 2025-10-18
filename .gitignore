@@ -158,3 +158,6 @@ temp/
 # Electron-specific
 electron-dist/
 release/
+
+#data files
+*.csv

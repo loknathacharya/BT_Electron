@@ -6,7 +6,11 @@ import json
 import sys
 import os
 import sqlite3
+import time
+import datetime
 from pathlib import Path
+import pandas as pd
+from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 
 class DatabaseService:
     """SQLite database service for trading data"""
@@ -15,16 +19,37 @@ class DatabaseService:
         if db_path is None:
             # Default to application data directory
             app_data = Path.home() / '.byod_backtesting'
-            app_data.mkdir(exist_ok=True)
+            try:
+                app_data.mkdir(exist_ok=True)
+                print(f"Database directory created/verified: {app_data}", file=sys.stderr)
+            except Exception as e:
+                print(f"Failed to create database directory {app_data}: {e}", file=sys.stderr)
+                # Fallback to current directory
+                app_data = Path.cwd() / '.byod_backtesting'
+                app_data.mkdir(exist_ok=True)
+                print(f"Using fallback database directory: {app_data}", file=sys.stderr)
+
             db_path = app_data / 'trading_data.db'
 
         self.db_path = db_path
+        print(f"Database path: {self.db_path}", file=sys.stderr)
         self.init_database()
 
     def init_database(self):
         """Initialize database with required tables"""
         try:
+            print(f"Initializing database at: {self.db_path}", file=sys.stderr)
+
+            # Check if file exists and get its size before connecting
+            if self.db_path.exists():
+                print(f"Database file already exists, size: {self.db_path.stat().st_size} bytes", file=sys.stderr)
+            else:
+                print("Database file does not exist, will be created", file=sys.stderr)
+
             with sqlite3.connect(self.db_path) as conn:
+                print("Connected to database successfully", file=sys.stderr)
+
+                # Create tables
                 conn.execute('''
                     CREATE TABLE IF NOT EXISTS price_data (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -88,11 +113,20 @@ class DatabaseService:
                     )
                 ''')
 
-                print(f"Database initialized at: {self.db_path}")
-                print(f"Database size: {self.db_path.stat().st_size} bytes")
+                # Verify tables were created
+                cursor = conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'")
+                table_count = cursor.fetchone()[0]
+                print(f"Database initialized successfully with {table_count} tables", file=sys.stderr)
+
+                # Get final database size
+                final_size = self.db_path.stat().st_size
+                print(f"Database final size: {final_size} bytes", file=sys.stderr)
 
         except Exception as e:
-            print(f"Database initialization error: {e}")
+            print(f"Database initialization error: {e}", file=sys.stderr)
+            print(f"Error type: {type(e).__name__}", file=sys.stderr)
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}", file=sys.stderr)
             raise
 
     def test_connection(self):
@@ -118,10 +152,309 @@ class DatabaseService:
 # Global database service instance
 db_service = DatabaseService()
 
-import pandas as pd
-from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
-from io import BytesIO
-import os
+class ValidationError(Exception):
+    """Custom exception for validation errors"""
+    def __init__(self, message, row_index=None, column=None, value=None):
+        super().__init__(message)
+        self.row_index = row_index
+        self.column = column
+        self.value = value
+
+class DataValidationPipeline:
+    """Comprehensive data validation pipeline for OHLCV data"""
+
+    def __init__(self):
+        self.errors = []
+        self.warnings = []
+
+    def validate_dataframe(self, df: pd.DataFrame) -> tuple[bool, list, list]:
+        """Run all validations on the dataframe"""
+        self.errors = []
+        self.warnings = []
+
+        # Required columns validation
+        self._validate_required_columns(df)
+
+        # Data type validation
+        self._validate_data_types(df)
+
+        # Price validation
+        self._validate_price_data(df)
+
+        # Date validation
+        self._validate_dates(df)
+
+        # Duplicate validation
+        self._validate_duplicates(df)
+
+        # Volume validation (if present)
+        self._validate_volume(df)
+
+        return len(self.errors) == 0, self.errors, self.warnings
+
+    def _validate_required_columns(self, df: pd.DataFrame):
+        """Validate that all required columns are present"""
+        required_columns = ['Date', 'Open', 'High', 'Low', 'Close']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+
+        if missing_columns:
+            self.errors.append(f"Missing required columns: {', '.join(missing_columns)}")
+
+    def _validate_data_types(self, df: pd.DataFrame):
+        """Validate data types for each column"""
+        # Numeric columns should be convertible to float
+        numeric_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+        for col in numeric_columns:
+            if col in df.columns:
+                try:
+                    pd.to_numeric(df[col], errors='coerce')
+                except Exception as e:
+                    self.errors.append(f"Column '{col}' contains non-numeric data: {str(e)}")
+
+    def _validate_price_data(self, df: pd.DataFrame):
+        """Validate price relationships and values"""
+        if all(col in df.columns for col in ['Open', 'High', 'Low', 'Close']):
+            # Check for negative prices
+            for col in ['Open', 'High', 'Low', 'Close']:
+                negative_prices = df[col] < 0
+                if negative_prices.any():
+                    count = negative_prices.sum()
+                    self.errors.append(f"Column '{col}' contains {count} negative price(s)")
+
+            # Check price relationships: High >= Open, High >= Close, Low <= Open, Low <= Close
+            if not (df['High'] >= df['Open']).all():
+                violations = (~(df['High'] >= df['Open'])).sum()
+                self.warnings.append(f"High < Open in {violations} row(s)")
+
+            if not (df['High'] >= df['Close']).all():
+                violations = (~(df['High'] >= df['Close'])).sum()
+                self.warnings.append(f"High < Close in {violations} row(s)")
+
+            if not (df['Low'] <= df['Open']).all():
+                violations = (~(df['Low'] <= df['Open'])).sum()
+                self.warnings.append(f"Low > Open in {violations} row(s)")
+
+            if not (df['Low'] <= df['Close']).all():
+                violations = (~(df['Low'] <= df['Close'])).sum()
+                self.warnings.append(f"Low > Close in {violations} row(s)")
+
+    def _validate_dates(self, df: pd.DataFrame):
+        """Validate date column"""
+        if 'Date' in df.columns:
+            # Check for invalid dates
+            if df['Date'].isna().any():
+                na_count = df['Date'].isna().sum()
+                self.errors.append(f"Date column contains {na_count} invalid date(s)")
+
+            # Check for duplicate timestamps
+            if df['Date'].duplicated().any():
+                dup_count = df['Date'].duplicated().sum()
+                self.warnings.append(f"Date column contains {dup_count} duplicate timestamp(s)")
+
+    def _validate_duplicates(self, df: pd.DataFrame):
+        """Validate for duplicate rows"""
+        if 'Date' in df.columns and 'Ticker' in df.columns:
+            duplicates = df.duplicated(subset=['Ticker', 'Date'], keep=False)
+            if duplicates.any():
+                dup_count = duplicates.sum()
+                self.warnings.append(f"Found {dup_count} duplicate row(s) based on Ticker and Date")
+
+    def _validate_volume(self, df: pd.DataFrame):
+        """Validate volume data if present"""
+        if 'Volume' in df.columns:
+            # Check for negative volume
+            negative_volume = df['Volume'] < 0
+            if negative_volume.any():
+                count = negative_volume.sum()
+                self.errors.append(f"Volume column contains {count} negative value(s)")
+
+            # Check for zero volume (might be valid for some instruments)
+            zero_volume = df['Volume'] == 0
+            if zero_volume.any():
+                count = zero_volume.sum()
+                self.warnings.append(f"Volume column contains {count} zero value(s)")
+
+class ProgressReporter:
+    """Handles progress reporting to Electron frontend"""
+
+    def __init__(self, total_rows=0):
+        self.total_rows = total_rows
+        self.current_row = 0
+        self.start_time = time.time()
+        self.last_report_time = 0
+
+    def report_progress(self, current_row, errors=None):
+        """Report progress to stdout for Electron to capture"""
+        self.current_row = current_row
+        current_time = time.time()
+
+        # Only report every 0.5 seconds to avoid spam
+        if current_time - self.last_report_time < 0.5 and current_row < self.total_rows:
+            return
+
+        if self.total_rows > 0:
+            progress = int((current_row / self.total_rows) * 100)
+        else:
+            # Estimate progress based on file size for files without known row count
+            progress = min(95, int((current_row / max(1, current_row + 1000)) * 100))  # Cap at 95% until final
+
+        elapsed_time = current_time - self.start_time
+
+        report = {
+            'type': 'import-progress',
+            'progress': progress,
+            'currentRow': current_row,
+            'totalRows': self.total_rows,
+            'elapsedTime': round(elapsed_time, 2)
+        }
+
+        if errors:
+            report['errors'] = errors
+
+        print(json.dumps(report), flush=True)
+        self.last_report_time = current_time
+
+    def report_summary(self, summary_data):
+        """Report final summary"""
+        summary_data['type'] = 'import-summary'
+        response_json = json.dumps(summary_data)
+        print(f"IMPORT: Sending final response: {response_json}", file=sys.stderr)
+        print(response_json, flush=True)
+        print(f"IMPORT: Final response sent", file=sys.stderr)
+
+def _apply_custom_column_mapping(df: pd.DataFrame, column_mapping: dict) -> pd.DataFrame:
+    """Apply custom column mapping from frontend"""
+    df = df.copy()
+
+    # Map the columns according to the frontend mapping
+    rename_map = {}
+    field_name_map = {
+        'timestamp': 'Date',
+        'open': 'Open',
+        'high': 'High',
+        'low': 'Low',
+        'close': 'Close',
+        'volume': 'Volume',
+        'ticker': 'Ticker'
+    }
+    
+    for target_field, source_column in column_mapping.items():
+        if source_column in df.columns:
+            if target_field in field_name_map:
+                rename_map[source_column] = field_name_map[target_field]
+
+    # Apply the renaming
+    df = df.rename(columns=rename_map)
+
+    # Also handle case-insensitive matching - check if columns exist in different cases
+    for standard_name in field_name_map.values():
+        if standard_name not in df.columns:
+            # Look for column with different case
+            for col in df.columns:
+                if col.lower() == standard_name.lower():
+                    df[standard_name] = df[col]
+                    df = df.drop(columns=[col])
+                    break
+
+    # Validate that we have the required columns
+    required_columns = ['Date', 'Open', 'High', 'Low', 'Close']
+    missing_columns = [col for col in required_columns if col not in df.columns]
+
+    if missing_columns:
+        raise ValueError(f"Missing required columns after mapping: {missing_columns}. Available columns: {list(df.columns)}")
+
+    return df
+
+def _generate_column_mapping(df: pd.DataFrame) -> dict:
+    """Generate intelligent column mapping with confidence scores"""
+    mapping = {}
+    confidence_scores = {}
+    
+    # Define comprehensive column patterns for each field type
+    field_patterns = {
+        'timestamp': [
+            # Date patterns
+            'date', 'datetime', 'timestamp', 'time', 'trade_date', 'trade_time',
+            'dt', 'trade_dt', 'execution_date', 'execution_time',
+            # Unix timestamp patterns
+            'unix_timestamp', 'epoch', 'timestamp_ms', 'timestamp_s',
+            # Excel date patterns
+            'excel_date', 'serial_date',
+            # Other date formats
+            'trade_date', 'settlement_date', 'expiration_date'
+        ],
+        'open': [
+            'open', 'o', 'open_price', 'price_open', 'open_px', 'px_open',
+            'trade_open', 'entry', 'open_trade', 'open_exec',
+            'open_bid', 'bid_open', 'open_ask', 'ask_open',
+            'open_last', 'last_open', 'open_close', 'close_open'
+        ],
+        'high': [
+            'high', 'h', 'high_price', 'price_high', 'high_px', 'px_high',
+            'trade_high', 'high_trade', 'high_exec', 'high_bid', 'bid_high',
+            'high_ask', 'ask_high', 'high_last', 'last_high'
+        ],
+        'low': [
+            'low', 'l', 'low_price', 'price_low', 'low_px', 'px_low',
+            'trade_low', 'low_trade', 'low_exec', 'low_bid', 'bid_low',
+            'low_ask', 'ask_low', 'low_last', 'last_low'
+        ],
+        'close': [
+            'close', 'c', 'close_price', 'price_close', 'close_px', 'px_close',
+            'trade_close', 'close_trade', 'close_exec', 'close_bid', 'bid_close',
+            'close_ask', 'ask_close', 'close_last', 'last_close',
+            'adj_close', 'adj_close_price', 'adjusted_close', 'price_adj_close',
+            'settle', 'settlement', 'settlement_price'
+        ],
+        'volume': [
+            'volume', 'vol', 'v', 'volume traded', 'traded_volume',
+            'trade_volume', 'vol traded', 'qty', 'quantity', 'shares',
+            'volume_shares', 'trade_qty', 'exec_qty', 'exec_volume',
+            'bid_size', 'ask_size', 'size', 'trade_size'
+        ],
+        'ticker': [
+            'ticker', 'symbol', 'instrument', 'sym', 'asset', 'code',
+            'ticker_symbol', 'stock_symbol', 'instrument_code', 'asset_code',
+            'security', 'security_id', 'isin', 'cusip', 'sedol',
+            'company', 'company_name', 'name', 'security_name'
+        ]
+    }
+    
+    # Convert all columns to lowercase for case-insensitive matching
+    original_columns = df.columns.tolist()
+    lower_columns = [col.lower().strip() for col in original_columns]
+    
+    # Create a mapping from normalized column names to original names
+    column_map = {lower: original for lower, original in zip(lower_columns, original_columns)}
+    
+    # Try to match each field type
+    for field_type, patterns in field_patterns.items():
+        best_match = None
+        best_score = 0
+        
+        for pattern in patterns:
+            # Exact match
+            if pattern in column_map:
+                best_match = column_map[pattern]
+                best_score = 100
+                break
+            
+            # Partial match (contains)
+            for col_lower in lower_columns:
+                if pattern in col_lower:
+                    score = len(pattern) / len(col_lower) * 80  # Score based on pattern length ratio
+                    if score > best_score:
+                        best_score = score
+                        best_match = column_map[col_lower]
+        
+        if best_match and best_score >= 50:  # Minimum confidence threshold
+            mapping[field_type] = best_match
+            confidence_scores[field_type] = best_score
+    
+    return {
+        "mapping": mapping,
+        "confidence_scores": confidence_scores
+    }
 
 def _standardize_ohlcv_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -130,10 +463,10 @@ def _standardize_ohlcv_columns(df: pd.DataFrame) -> pd.DataFrame:
     col_map = {
          'ticker': 'ticker', 'symbol': 'ticker', 'instrument': 'ticker', 'sym': 'ticker', 'asset': 'ticker',
          'date': 'date', 'datetime': 'date', 'timestamp': 'date', 'time': 'date',
-         'open': 'open', 'o': 'open',
-         'high': 'high', 'h': 'high',
-         'low': 'low', 'l': 'low',
-         'close': 'close', 'c': 'close', 'adj close': 'close', 'adj_close': 'close', 'adjusted close': 'close',
+         'open': 'open', 'o': 'open', 'open_price': 'open', 'price_open': 'open',
+         'high': 'high', 'h': 'high', 'high_price': 'high', 'price_high': 'high',
+         'low': 'low', 'l': 'low', 'low_price': 'low', 'price_low': 'low',
+         'close': 'close', 'c': 'close', 'adj close': 'close', 'adj_close': 'close', 'adjusted close': 'close', 'close_price': 'close', 'price_close': 'close',
          'volume': 'volume', 'v': 'volume', 'vol': 'volume'
      }
     rename_map = {c: col_map[c] for c in df.columns if c in col_map}
@@ -158,11 +491,17 @@ def _parse_dates(series: pd.Series) -> pd.Series:
         else:
             return pd.to_datetime(s, unit='s', errors='coerce')
 
-    # Strings: take left date part before space and try ISO first, then flexible
+    # Strings: try various formats
     s = s.astype(str).str.strip()
-    s = s.str.split().str[0]
-    parsed = pd.to_datetime(s, format='%Y-%m-%d', errors='coerce')
+
+    # Try parsing with timezone info first
+    parsed = pd.to_datetime(s, errors='coerce', utc=False)
     if parsed.isna().all():
+        # Try parsing just the date part
+        s = s.str.split().str[0]
+        parsed = pd.to_datetime(s, format='%Y-%m-%d', errors='coerce')
+    if parsed.isna().all():
+        # Try flexible parsing
         parsed = pd.to_datetime(s, errors='coerce', dayfirst=False, utc=False)
     return parsed
 
@@ -175,13 +514,22 @@ def _read_any_ohlcv(file_path: str) -> pd.DataFrame:
     else:
         return pd.read_csv(file_path, low_memory=False)
 
-def preview_file(file_path: str) -> dict:
+def preview_file(file_path: str, request_id: str | None = None) -> dict:
     try:
         df = _read_any_ohlcv(file_path)
     except Exception as e:
         raise ValueError(f"Failed to read file '{file_path}': {e}")
 
-    df = _standardize_ohlcv_columns(df)
+    # Generate intelligent auto-mapping before standardization
+    auto_mapping_result = _generate_column_mapping(df)
+    auto_mapping = auto_mapping_result.get("mapping", {})
+    confidence_scores = auto_mapping_result.get("confidence_scores", {})
+    
+    # Apply auto-mapping if we have sufficient confidence
+    if auto_mapping:
+        df = _apply_custom_column_mapping(df, auto_mapping)
+    else:
+        df = _standardize_ohlcv_columns(df)
 
     required = ['Date', 'Open', 'High', 'Low', 'Close']
     missing = [c for c in required if c not in df.columns]
@@ -200,7 +548,9 @@ def preview_file(file_path: str) -> dict:
     # Numeric coercion
     for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
         if col in df.columns:
+            print(f"Converting column {col}: {df[col].head(3).tolist()}", file=sys.stderr)
             df[col] = pd.to_numeric(df[col], errors='coerce')
+            print(f"After conversion: {df[col].head(3).tolist()}", file=sys.stderr)
 
     before = len(df)
     df.dropna(subset=['Date', 'Close', 'Low', 'Open', 'High'], inplace=True)
@@ -220,11 +570,17 @@ def preview_file(file_path: str) -> dict:
         "rows_total": int(after),
         "rows_dropped": int(dropped),
         "columns": list(df.columns),
-        "preview": preview_records
+        "preview": preview_records,
+        "auto_mapping": auto_mapping,
+        "confidence_scores": confidence_scores,
+        "requestId": request_id
     }
 
 def handle_request(request):
     """Handle incoming requests from Electron main process"""
+    # Initialize request_id early to avoid unbound variable issues
+    request_id = request.get('requestId', 'unknown')
+
     try:
         if request.get('action') == 'health-check':
             db_status = db_service.test_connection()
@@ -232,70 +588,229 @@ def handle_request(request):
                 'status': 'ok',
                 'database': db_status,
                 'python_version': sys.version,
-                'message': 'Python backend is running'
+                'message': 'Python backend is running',
+                'requestId': request_id
             }
         elif request.get('action') == 'ping':
             return {
                 'ok': True,
                 'from': 'python',
-                'message': 'Python backend responding to ping'
+                'message': 'Python backend responding to ping',
+                'requestId': request_id
             }
         elif request.get('action') == 'preview-file':
             file_path = request.get('data', {}).get('file_path')
             if not file_path or not os.path.exists(file_path):
-                return {'error': 'Invalid or missing file path'}
-            return preview_file(file_path)
+                return {'error': 'Invalid or missing file path', 'requestId': request_id}
+            return preview_file(file_path, request_id)
+        elif request.get('action') == 'get-price-data':
+            """Get price data from database for viewing"""
+            try:
+                symbol = request.get('data', {}).get('symbol', 'ALL')
+                limit = request.get('data', {}).get('limit', 1000)
+                offset = request.get('data', {}).get('offset', 0)
+                
+                with sqlite3.connect(db_service.db_path) as conn:
+                    if symbol == 'ALL':
+                        # Get all symbols first
+                        query = '''
+                            SELECT DISTINCT symbol FROM price_data
+                            ORDER BY symbol
+                        '''
+                        cursor = conn.execute(query)
+                        symbols = [row[0] for row in cursor.fetchall()]
+                        
+                        # Then get sample data from all symbols combined
+                        query = '''
+                            SELECT symbol, timestamp, open, high, low, close, volume
+                            FROM price_data
+                            ORDER BY timestamp DESC
+                            LIMIT ? OFFSET ?
+                        '''
+                        cursor = conn.execute(query, (limit, offset))
+                        columns = [desc[0] for desc in cursor.description]
+                        rows = cursor.fetchall()
+                        
+                        # Convert rows to dictionaries and format dates
+                        data = []
+                        for row in rows:
+                            data.append({
+                                'symbol': row[0],
+                                'timestamp': row[1],
+                                'date': datetime.datetime.fromtimestamp(row[1]).strftime('%Y-%m-%d'),
+                                'open': row[2],
+                                'high': row[3],
+                                'low': row[4],
+                                'close': row[5],
+                                'volume': row[6]
+                            })
+                        
+                        return {
+                            'data': data,
+                            'total_count': len(data),
+                            'symbols': symbols,
+                            'symbol': symbol,
+                            'requestId': request_id
+                        }
+                    else:
+                        query = '''
+                            SELECT symbol, timestamp, open, high, low, close, volume
+                            FROM price_data
+                            WHERE symbol = ?
+                            ORDER BY timestamp DESC
+                            LIMIT ? OFFSET ?
+                        '''
+                        cursor = conn.execute(query, (symbol, limit, offset))
+                        columns = [desc[0] for desc in cursor.description]
+                        rows = cursor.fetchall()
+                        
+                        # Convert rows to dictionaries and format dates
+                        data = []
+                        for row in rows:
+                            data.append({
+                                'symbol': row[0],
+                                'timestamp': row[1],
+                                'date': datetime.datetime.fromtimestamp(row[1]).strftime('%Y-%m-%d'),
+                                'open': row[2],
+                                'high': row[3],
+                                'low': row[4],
+                                'close': row[5],
+                                'volume': row[6]
+                            })
+                        
+                        return {
+                            'data': data,
+                            'total_count': len(data),
+                            'symbol': symbol,
+                            'requestId': request_id
+                        }
+            except Exception as e:
+                return {
+                    'error': f'Failed to fetch price data: {str(e)}',
+                    'requestId': request_id
+                }
         elif request.get('action') == 'import-data':
             data = request.get('data', {})
             file_path = data.get('file_path')
             symbol = data.get('symbol', 'DEFAULT')
+            column_mapping = data.get('column_mapping', {})
 
             if not file_path or not os.path.exists(file_path):
-                return {'error': 'Invalid or missing file path'}
+                return {'error': 'Invalid or missing file path', 'requestId': request_id}
+
+            start_time = time.time()
+            progress_reporter = None  # Initialize to None
+            validator = DataValidationPipeline()
 
             try:
+                print(f"IMPORT: Starting import process for file: {file_path}", file=sys.stderr)
+                print(f"IMPORT: File size: {os.path.getsize(file_path) if os.path.exists(file_path) else 'N/A'} bytes", file=sys.stderr)
+                print(f"IMPORT: Request ID: {request_id}", file=sys.stderr)
+                print(f"IMPORT: Symbol: {symbol}", file=sys.stderr)
+                if column_mapping:
+                    print(f"IMPORT: Column mapping: {column_mapping}", file=sys.stderr)
+
                 # Read and process the file
+                print("IMPORT: Reading file...", file=sys.stderr)
+                file_read_start = time.time()
                 df = _read_any_ohlcv(file_path)
-                df = _standardize_ohlcv_columns(df)
+                file_read_time = time.time() - file_read_start
+                print(f"IMPORT: File read, shape: {df.shape}, time: {file_read_time:.2f}s", file=sys.stderr)
+                print(f"IMPORT: Original columns: {list(df.columns)}", file=sys.stderr)
+
+                # Initialize progress reporter after we know the row count
+                progress_reporter = ProgressReporter(len(df))
+
+                # Apply custom column mapping if provided, otherwise use standardization
+                if column_mapping:
+                    print(f"IMPORT: Applying custom column mapping", file=sys.stderr)
+                    mapping_start = time.time()
+                    df = _apply_custom_column_mapping(df, column_mapping)
+                    mapping_time = time.time() - mapping_start
+                    print(f"IMPORT: Column mapping completed in {mapping_time:.2f}s", file=sys.stderr)
+                    print(f"IMPORT: Mapped columns: {list(df.columns)}", file=sys.stderr)
+                else:
+                    print("IMPORT: Applying standard column mapping", file=sys.stderr)
+                    mapping_start = time.time()
+                    df = _standardize_ohlcv_columns(df)
+                    mapping_time = time.time() - mapping_start
+                    print(f"IMPORT: Standard column mapping completed in {mapping_time:.2f}s", file=sys.stderr)
+                    print(f"IMPORT: Standardized columns: {list(df.columns)}", file=sys.stderr)
 
                 # Ensure Ticker column exists
                 if 'Ticker' not in df.columns:
                     df['Ticker'] = symbol
 
                 # Parse dates and convert to timestamp
+                print("IMPORT: Parsing dates...", file=sys.stderr)
+                date_parse_start = time.time()
                 df['Date'] = _parse_dates(df['Date'])
+                date_parse_time = time.time() - date_parse_start
+                print(f"IMPORT: Date parsing completed in {date_parse_time:.2f}s", file=sys.stderr)
+
                 if not is_datetime64_any_dtype(df['Date']):
-                    return {'error': 'Date column could not be reliably converted to datetime'}
+                    return {'error': 'Date column could not be reliably converted to datetime', 'requestId': request_id}
 
                 # Convert dates to timestamps (seconds since epoch)
+                print("IMPORT: Converting dates to timestamps...", file=sys.stderr)
+                timestamp_start = time.time()
                 df['Date'] = df['Date'].astype('int64') // 10**9
+                timestamp_time = time.time() - timestamp_start
+                print(f"IMPORT: Timestamp conversion completed in {timestamp_time:.2f}s", file=sys.stderr)
 
                 # Numeric coercion
                 for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
                     if col in df.columns:
                         df[col] = pd.to_numeric(df[col], errors='coerce')
 
+                # Run comprehensive validation
+                print("IMPORT: Running data validation...", file=sys.stderr)
+                validation_start = time.time()
+                before_validation = len(df)
+                is_valid, errors, warnings = validator.validate_dataframe(df)
+                validation_time = time.time() - validation_start
+                print(f"IMPORT: Validation completed in {validation_time:.2f}s, valid: {is_valid}", file=sys.stderr)
+
+                if not is_valid:
+                    return {
+                        'error': f'Validation failed: {"; ".join(errors[:5])}',
+                        'validation_errors': errors,
+                        'validation_warnings': warnings,
+                        'requestId': request_id
+                    }
+
                 # Drop rows with missing required data
                 before = len(df)
-                print(f"Before dropna: {before} rows")
-                print(f"Sample data before dropna: {df.head(2).to_dict()}")
+                progress_reporter.report_progress(0, errors + warnings)
+                print(f"IMPORT: Initial data validation complete. Rows before cleaning: {before}", file=sys.stderr)
 
+                print("IMPORT: Cleaning data...", file=sys.stderr)
+                dropna_start = time.time()
                 df.dropna(subset=['Date', 'Close', 'Low', 'Open', 'High'], inplace=True)
                 after = len(df)
-
-                print(f"After dropna: {after} rows, dropped: {before - after}")
+                dropna_time = time.time() - dropna_start
+                print(f"IMPORT: Data cleaned: {after} rows, dropped: {before - after}, time: {dropna_time:.2f}s", file=sys.stderr)
+                print(f"IMPORT: Final columns: {list(df.columns)}", file=sys.stderr)
+                print(f"IMPORT: Sample data after cleaning:", file=sys.stderr)
+                print(df.head(3).to_string(), file=sys.stderr)
 
                 if after == 0:
-                    return {'error': f'No valid data rows after cleaning. Before: {before}, After: {after}'}
+                    return {'error': f'No valid data rows after cleaning. Before: {before}, After: {after}. Check that Date column is valid and OHLC columns contain numeric data.', 'requestId': request_id}
 
-                # Insert into database
+                # Insert into database with progress reporting
                 rows_imported = 0
-                with sqlite3.connect(db_service.db_path) as conn:
-                    for _, row in df.iterrows():
-                        try:
-                            # Debug: Print row data to see what's happening
-                            print(f"Inserting row: Ticker={row.get('Ticker')}, Date={row.get('Date')}, Open={row.get('Open')}")
+                rows_skipped = 0
 
+                print(f"IMPORT: Starting database insertion for {len(df)} rows", file=sys.stderr)
+                print(f"IMPORT: Database path: {db_service.db_path}", file=sys.stderr)
+                db_start = time.time()
+                with sqlite3.connect(db_service.db_path) as conn:
+                    for index, row in df.iterrows():
+                        try:
+                            # Log first few rows for debugging
+                            if index in [0, 1, 2]:
+                                print(f"IMPORT: Processing row {index}: Ticker={row.get('Ticker', 'N/A')}, Date={row.get('Date', 'N/A')}, Open={row.get('Open', 'N/A')}", file=sys.stderr)
+                            
                             conn.execute('''
                                 INSERT OR REPLACE INTO price_data
                                 (symbol, timestamp, open, high, low, close, volume)
@@ -310,33 +825,68 @@ def handle_request(request):
                                 int(row['Volume']) if pd.notna(row['Volume']) and row['Volume'] != '' else None
                             ))
                             rows_imported += 1
+
+                            # Report progress every 100 rows or at the end
+                            if rows_imported % 100 == 0 or rows_imported == after:
+                                elapsed_db = time.time() - db_start
+                                print(f"IMPORT: Database progress: {rows_imported}/{after} rows, time: {elapsed_db:.2f}s", file=sys.stderr)
+                                progress_reporter.report_progress(rows_imported)
+
                         except Exception as e:
-                            print(f"Error inserting row {rows_imported}: {e}, row data: {dict(row)}")
+                            rows_skipped += 1
+                            if rows_skipped <= 10:  # Only report first 10 errors
+                                progress_reporter.report_progress(rows_imported, [f"Row {index}: {str(e)}"])
+                            print(f"IMPORT: Error inserting row {index}: {str(e)}", file=sys.stderr)
                             continue
 
-                return {
+                # Calculate final metrics
+                elapsed_time = time.time() - start_time
+                print(f"IMPORT: Import process completed in {elapsed_time:.2f} seconds", file=sys.stderr)
+
+                summary = {
                     'success': True,
-                    'rows_imported': rows_imported,
+                    'rowsImported': rows_imported,
+                    'rowsSkipped': rows_skipped,
                     'symbol': symbol,
-                    'total_rows': after,
-                    'rows_dropped': before - after
+                    'totalRows': after,
+                    'rowsDropped': before - after,
+                    'timeElapsed': round(elapsed_time, 2),
+                    'validationWarnings': warnings,
+                    'requestId': request_id
                 }
 
+                # Send final summary
+                print(f"IMPORT: About to send final response for requestId: {request_id}", file=sys.stderr)
+                progress_reporter.report_summary(summary)
+                print(f"IMPORT: Final response sent for requestId: {request_id}", file=sys.stderr)
+
+                return summary
+
             except Exception as e:
-                return {'error': f'Import failed: {str(e)}'}
+                elapsed_time = time.time() - start_time
+                error_summary = {
+                    'error': f'Import failed: {str(e)}',
+                    'timeElapsed': round(elapsed_time, 2),
+                    'requestId': request_id
+                }
+                if progress_reporter:
+                    progress_reporter.report_summary(error_summary)
+                return error_summary
         else:
             return {
                 'error': 'Unknown action',
-                'action': request.get('action')
+                'action': request.get('action'),
+                'requestId': request_id
             }
     except Exception as e:
         return {
-            'error': str(e)
+            'error': str(e),
+            'requestId': request_id
         }
 
 def main():
     """Main entry point for the Python backend service"""
-    print("Python backend process started", flush=True)
+    print("Python backend process started", flush=True, file=sys.stderr)
 
     try:
         for line in sys.stdin:
