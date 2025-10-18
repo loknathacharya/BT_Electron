@@ -25,6 +25,15 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     assetsDir: 'assets',
+    rollupOptions: {
+      output: {
+        manualChunks: undefined,
+      },
+    },
+  },
+  optimizeDeps: {
+    force: true,
+    include: ['react', 'react-dom'],
   },
   resolve: {
     alias: {

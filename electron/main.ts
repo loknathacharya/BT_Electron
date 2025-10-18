@@ -397,7 +397,7 @@ ipcMain.handle('preview-file', async (_event, data) => {
 // Import data handler for importing CSV data into database
 ipcMain.handle('import-data', async (_event, data) => {
   try {
-    const { filePath, symbol, columnMapping } = data;
+    const { filePath, symbol, columnMapping, incremental } = data;
 
     if (!filePath) {
       throw new Error('No file path provided');
@@ -407,11 +407,12 @@ ipcMain.handle('import-data', async (_event, data) => {
       throw new Error('File does not exist');
     }
 
-    // Send to Python backend for processing with column mapping
+    // Send to Python backend for processing with column mapping and incremental flag
     const result = await pythonService.sendToPython('import-data', {
       file_path: filePath,
       symbol: symbol || 'DEFAULT',
-      column_mapping: columnMapping || {}
+      column_mapping: columnMapping || {},
+      incremental: incremental !== undefined ? incremental : true  // Default to true if not specified
     }) as any;
 
     if (result.error) {
@@ -426,7 +427,9 @@ ipcMain.handle('import-data', async (_event, data) => {
       rowsSkipped: result.rowsSkipped || result.rows_skipped || 0,
       symbol: symbol || 'DEFAULT',
       timeElapsed: result.timeElapsed || result.time_elapsed || 0,
-      validationWarnings: result.validationWarnings || result.validation_warnings || []
+      validationWarnings: result.validationWarnings || result.validation_warnings || [],
+      incrementalUpdate: result.incrementalUpdate || result.incremental_update || false,
+      existingDataRange: result.existingDataRange || result.existing_data_range || null
     };
   } catch (error) {
     console.error('Error in import-data:', error);
@@ -439,7 +442,7 @@ ipcMain.handle('import-data', async (_event, data) => {
 // Get price data handler for viewing imported data
 ipcMain.handle('get-price-data', async (_event, data) => {
   try {
-    const { symbol, limit = 1000, offset = 0 } = data;
+    const { symbol, limit = 1000, offset = 0, start_date, end_date } = data;
 
     if (!symbol) {
       throw new Error('No symbol provided');
@@ -449,7 +452,9 @@ ipcMain.handle('get-price-data', async (_event, data) => {
     const result = await pythonService.sendToPython('get-price-data', {
       symbol,
       limit,
-      offset
+      offset,
+      start_date,
+      end_date
     }) as any;
 
     if (result.error) {
@@ -459,7 +464,9 @@ ipcMain.handle('get-price-data', async (_event, data) => {
     console.log('Price data retrieved successfully:', {
       symbol,
       count: result.data?.length || 0,
-      symbols: result.symbols?.length || 0
+      symbols: result.symbols?.length || 0,
+      start_date,
+      end_date
     });
 
     return result;

@@ -18,6 +18,12 @@ const ImportData: React.FC = () => {
   const [confidenceScores, setConfidenceScores] = useState<{[key: string]: number}>({});
   const [showAutoMappingDialog, setShowAutoMappingDialog] = useState(false);
   const [autoMappingApplied, setAutoMappingApplied] = useState(false);
+  const [incrementalUpdates, setIncrementalUpdates] = useState(true);
+  const [existingDataInfo, setExistingDataInfo] = useState<any>(null);
+  
+  // New: Dataset metadata
+  const [datasetName, setDatasetName] = useState<string>('');
+  const [datasetDescription, setDatasetDescription] = useState<string>('');
 
   const handleSelectFile = async () => {
     if (!window.electronAPI) {
@@ -134,7 +140,10 @@ const ImportData: React.FC = () => {
       const result = await window.electronAPI.invoke('import-data', {
         filePath,
         symbol,
-        columnMapping: columnMapping
+        columnMapping: columnMapping,
+        incremental: incrementalUpdates,
+        dataset_name: datasetName,
+        dataset_description: datasetDescription
       });
 
       const endTime = Date.now();
@@ -427,8 +436,19 @@ const ImportData: React.FC = () => {
 
         {importSummary && (
           <div className="import-summary" style={{ marginTop: '20px', padding: '15px', backgroundColor: '#f9f9f9', borderRadius: '5px' }}>
-            <h3>Import Summary</h3>
+            <h3>✓ Import Completed Successfully</h3>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px' }}>
+              <div style={{ backgroundColor: '#e3f2fd', padding: '10px', borderRadius: '4px' }}>
+                <strong>📊 Dataset:</strong>
+                <div style={{ fontSize: '14px', color: '#1565c0', marginTop: '5px' }}>
+                  {datasetName}
+                </div>
+                {datasetDescription && (
+                  <div style={{ fontSize: '13px', color: '#666', marginTop: '4px' }}>
+                    {datasetDescription}
+                  </div>
+                )}
+              </div>
               <div>
                 <strong>Rows Imported:</strong> {importSummary.rowsImported || 0}
               </div>
@@ -441,6 +461,17 @@ const ImportData: React.FC = () => {
               <div>
                 <strong>Time Elapsed:</strong> {importSummary.timeElapsed ? `${importSummary.timeElapsed}s` : 'N/A'}
               </div>
+              {importSummary.incrementalUpdate && (
+                <div style={{ backgroundColor: '#e8f5e8', padding: '10px', borderRadius: '4px' }}>
+                  <strong>Incremental Update:</strong> Yes
+                  {importSummary.existingDataRange && (
+                    <div style={{ fontSize: '14px', color: '#666', marginTop: '5px' }}>
+                      <div>Existing data: {importSummary.existingDataRange.total_rows || 0} rows</div>
+                      <div>Date range: {importSummary.existingDataRange.min_timestamp ? new Date(importSummary.existingDataRange.min_timestamp * 1000).toLocaleDateString() : 'N/A'} - {importSummary.existingDataRange.max_timestamp ? new Date(importSummary.existingDataRange.max_timestamp * 1000).toLocaleDateString() : 'N/A'}</div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -498,6 +529,34 @@ const ImportData: React.FC = () => {
         {filePath && (
           <div className="import-controls">
             <div className="form-group">
+              <label htmlFor="dataset-name">Dataset Name: <span style={{ color: 'red' }}>*</span></label>
+              <input
+                type="text"
+                id="dataset-name"
+                placeholder="e.g., My Trading Data, Daily OHLC 2024"
+                value={datasetName}
+                onChange={(e) => setDatasetName(e.target.value)}
+              />
+              <p style={{ fontSize: '13px', color: '#666', marginTop: '4px', marginBottom: '0' }}>
+                A descriptive name to identify this dataset for future use.
+              </p>
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="dataset-description">Dataset Description:</label>
+              <textarea
+                id="dataset-description"
+                placeholder="e.g., Daily OHLC data for crypto trading backtests"
+                value={datasetDescription}
+                onChange={(e) => setDatasetDescription(e.target.value)}
+                style={{ minHeight: '60px', resize: 'vertical' }}
+              />
+              <p style={{ fontSize: '13px', color: '#666', marginTop: '4px', marginBottom: '0' }}>
+                Optional notes about the dataset (data source, symbols included, etc.)
+              </p>
+            </div>
+
+            <div className="form-group">
               <label htmlFor="symbol">Symbol:</label>
               <input
                 type="text"
@@ -505,6 +564,23 @@ const ImportData: React.FC = () => {
                 placeholder="e.g., AAPL, BTC-USD"
                 defaultValue=""
               />
+            </div>
+
+            <div className="form-group">
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <input
+                  type="checkbox"
+                  id="incremental-updates"
+                  checked={incrementalUpdates}
+                  onChange={(e) => setIncrementalUpdates(e.target.checked)}
+                  style={{ width: '18px', height: '18px' }}
+                />
+                Enable Incremental Updates
+              </label>
+              <p style={{ fontSize: '14px', color: '#666', marginTop: '5px', marginBottom: '0' }}>
+                When enabled, only new data (outside existing date ranges) will be imported for each symbol.
+                This prevents duplicate data and allows for efficient updates.
+              </p>
             </div>
 
             {/* Column mapping interface for Sprint 2.2 */}
@@ -685,7 +761,8 @@ const ImportData: React.FC = () => {
               <button
                 className="btn"
                 onClick={handleImportData}
-                disabled={!filePath || loading || importing || !isMappingValid()}
+                disabled={!filePath || loading || importing || !isMappingValid() || !datasetName.trim()}
+                title={!datasetName.trim() ? 'Please enter a Dataset Name' : ''}
               >
                 {importing ? 'Importing...' : 'Import Data'}
               </button>

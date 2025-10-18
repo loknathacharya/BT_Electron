@@ -1,12 +1,27 @@
 import React, { useState, useEffect } from 'react';
 
 const ViewResults: React.FC = () => {
-  const [selectedMetric, setSelectedMetric] = useState('overview');
+  const [selectedMetric, setSelectedMetric] = useState('data-view');
   const [priceData, setPriceData] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [selectedSymbol, setSelectedSymbol] = useState('ALL');
   const [symbols, setSymbols] = useState<string[]>([]);
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [dateFilterApplied, setDateFilterApplied] = useState(false);
+  
+  // New: Dataset browsing state
+  const [datasets, setDatasets] = useState<any[]>([]);
+  const [datasetsLoading, setDatasetsLoading] = useState(false);
+  const [selectedDataset, setSelectedDataset] = useState<string | null>(null);
+
+  // Convert date string to timestamp
+  const dateToTimestamp = (dateString: string) => {
+    if (!dateString) return null;
+    const date = new Date(dateString);
+    return Math.floor(date.getTime() / 1000); // Convert to seconds
+  };
 
   // Fetch price data from database
   const fetchPriceData = async () => {
@@ -19,11 +34,17 @@ const ViewResults: React.FC = () => {
     setError('');
 
     try {
+      // Convert date strings to timestamps
+      const startTimestamp = dateToTimestamp(startDate);
+      const endTimestamp = dateToTimestamp(endDate);
+
       // Get both symbols and data in a single call
       const result = await window.electronAPI.invoke('get-price-data', {
         symbol: selectedSymbol || 'ALL',
         limit: 1000,
-        offset: 0
+        offset: 0,
+        start_date: startTimestamp,
+        end_date: endTimestamp
       });
       
       if (result.error) {
@@ -37,10 +58,15 @@ const ViewResults: React.FC = () => {
       // Update price data
       setPriceData(result.data || []);
       
+      // Check if date filter was applied
+      setDateFilterApplied(!!(startTimestamp || endTimestamp));
+      
       console.log('Data fetched successfully:', {
         symbol: selectedSymbol || 'ALL',
         dataCount: result.data?.length || 0,
-        symbolsCount: availableSymbols.length
+        symbolsCount: availableSymbols.length,
+        start_date: startTimestamp,
+        end_date: endTimestamp
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch data');
@@ -50,10 +76,51 @@ const ViewResults: React.FC = () => {
     }
   };
 
-  // Fetch data on component mount and when selected symbol changes
+  // Fetch available datasets from database
+  const fetchDatasets = async () => {
+    if (!window.electronAPI) {
+      setError('Electron API not available');
+      return;
+    }
+
+    setDatasetsLoading(true);
+    setError('');
+
+    try {
+      const result = await window.electronAPI.invoke('get-datasets', {});
+      
+      if (result.error) {
+        throw new Error(result.error);
+      }
+
+      setDatasets(result.datasets || []);
+      console.log('Datasets fetched successfully:', result.datasets);
+    } catch (err) {
+      console.error('Error fetching datasets:', err);
+      setDatasets([]);
+    } finally {
+      setDatasetsLoading(false);
+    }
+  };
+
+  // Handle dataset selection
+  const handleSelectDataset = (datasetName: string) => {
+    setSelectedDataset(datasetName);
+    // The data will be loaded via the normal price data fetch
+    setSelectedSymbol('ALL');
+    setStartDate('');
+    setEndDate('');
+  };
+
+  // Fetch datasets on component mount
+  useEffect(() => {
+    fetchDatasets();
+  }, []);
+
+  // Fetch data on component mount and when selected symbol or date filters change
   useEffect(() => {
     fetchPriceData();
-  }, [selectedSymbol]);
+  }, [selectedSymbol, startDate, endDate]);
 
   // Filter data by selected symbol
   const filteredData = selectedSymbol === 'ALL'
@@ -84,6 +151,12 @@ const ViewResults: React.FC = () => {
       <div className="results-container">
         <div className="results-navigation">
           <button
+            className={`nav-button ${selectedMetric === 'browse-datasets' ? 'active' : ''}`}
+            onClick={() => setSelectedMetric('browse-datasets')}
+          >
+            📚 Browse Datasets
+          </button>
+          <button
             className={`nav-button ${selectedMetric === 'data-view' ? 'active' : ''}`}
             onClick={() => setSelectedMetric('data-view')}
           >
@@ -109,29 +182,169 @@ const ViewResults: React.FC = () => {
           </button>
         </div>
 
+        {selectedMetric === 'browse-datasets' && (
+          <div className="browse-datasets-section">
+            <div className="datasets-header">
+              <h3>Available Datasets</h3>
+              <p>Select an existing dataset to view its data without re-importing</p>
+              <button
+                className="btn btn-secondary"
+                onClick={fetchDatasets}
+                disabled={datasetsLoading}
+              >
+                {datasetsLoading ? 'Loading...' : 'Refresh'}
+              </button>
+            </div>
+
+            {error && (
+              <div className="error-message" style={{ padding: '10px', backgroundColor: '#ffebee', color: '#d32f2f', borderRadius: '4px', marginBottom: '15px' }}>
+                {error}
+              </div>
+            )}
+
+            {datasetsLoading ? (
+              <div className="loading-message" style={{ padding: '20px', textAlign: 'center' }}>
+                Loading datasets...
+              </div>
+            ) : datasets.length === 0 ? (
+              <div className="no-data-message" style={{ padding: '20px', textAlign: 'center', color: '#666' }}>
+                No datasets available. Import data first to create a dataset.
+              </div>
+            ) : (
+              <div className="datasets-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '15px', marginBottom: '20px' }}>
+                {datasets.map((dataset) => (
+                  <div
+                    key={dataset.id}
+                    className={`dataset-card ${selectedDataset === dataset.name ? 'selected' : ''}`}
+                    style={{
+                      padding: '15px',
+                      border: selectedDataset === dataset.name ? '2px solid #2196F3' : '1px solid #ddd',
+                      borderRadius: '8px',
+                      cursor: 'pointer',
+                      backgroundColor: selectedDataset === dataset.name ? '#f0f7ff' : '#fff',
+                      transition: 'all 0.2s'
+                    }}
+                    onClick={() => handleSelectDataset(dataset.name)}
+                  >
+                    <h4 style={{ margin: '0 0 10px 0', color: '#1976d2' }}>{dataset.name}</h4>
+                    <p style={{ margin: '5px 0', fontSize: '14px', color: '#666' }}>
+                      {dataset.description}
+                    </p>
+                    <div style={{ margin: '10px 0', fontSize: '13px', backgroundColor: '#f5f5f5', padding: '8px', borderRadius: '4px' }}>
+                      <p style={{ margin: '3px 0' }}>📊 Symbols: {dataset.symbol_count}</p>
+                      <p style={{ margin: '3px 0' }}>📈 Rows: {dataset.total_rows?.toLocaleString()}</p>
+                      <p style={{ margin: '3px 0' }}>📅 Range: {dataset.date_range_start ? new Date(dataset.date_range_start * 1000).toLocaleDateString() : 'N/A'} to {dataset.date_range_end ? new Date(dataset.date_range_end * 1000).toLocaleDateString() : 'N/A'}</p>
+                      <p style={{ margin: '3px 0' }}>🕐 Last Updated: {new Date(dataset.last_updated * 1000).toLocaleDateString()}</p>
+                    </div>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleSelectDataset(dataset.name);
+                        setSelectedMetric('data-view');
+                      }}
+                      style={{ width: '100%', marginTop: '10px' }}
+                    >
+                      View Data
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {selectedDataset && (
+              <div style={{ marginTop: '20px', padding: '15px', backgroundColor: '#e8f5e8', borderRadius: '4px' }}>
+                <h4>Dataset Selected: {selectedDataset}</h4>
+                <p>Click "View Data" above or go to Data View tab to see the data for this dataset.</p>
+              </div>
+            )}
+          </div>
+        )}
+
         {selectedMetric === 'data-view' && (
           <div className="data-view-section">
             <div className="data-view-header">
               <h3>Imported Data View</h3>
+              {selectedDataset && (
+                <div style={{ marginBottom: '10px', padding: '10px', backgroundColor: '#e3f2fd', borderRadius: '4px', color: '#1976d2' }}>
+                  📦 Current Dataset: <strong>{selectedDataset}</strong>
+                </div>
+              )}
               <div className="data-controls">
-                <select
-                  value={selectedSymbol}
-                  onChange={(e) => setSelectedSymbol(e.target.value)}
-                  className="symbol-select"
-                >
-                  {symbols.map(symbol => (
-                    <option key={symbol} value={symbol}>{symbol}</option>
-                  ))}
-                </select>
+                <div className="symbol-filter">
+                  <select
+                    value={selectedSymbol}
+                    onChange={(e) => setSelectedSymbol(e.target.value)}
+                    className="symbol-select"
+                  >
+                    {symbols.map(symbol => (
+                      <option key={symbol} value={symbol}>{symbol}</option>
+                    ))}
+                  </select>
+                </div>
+                
+                <div className="date-filters">
+                  <div className="date-input-group">
+                    <label htmlFor="startDate">From:</label>
+                    <input
+                      type="date"
+                      id="startDate"
+                      value={startDate}
+                      onChange={(e) => setStartDate(e.target.value)}
+                      disabled={loading}
+                    />
+                  </div>
+                  
+                  <div className="date-input-group">
+                    <label htmlFor="endDate">To:</label>
+                    <input
+                      type="date"
+                      id="endDate"
+                      value={endDate}
+                      onChange={(e) => setEndDate(e.target.value)}
+                      disabled={loading}
+                    />
+                  </div>
+                  
+                  <button
+                    className="btn btn-secondary"
+                    onClick={() => {
+                      setStartDate('');
+                      setEndDate('');
+                      setDateFilterApplied(false);
+                    }}
+                    disabled={loading || (!startDate && !endDate)}
+                  >
+                    Clear
+                  </button>
+                </div>
+                
                 <button
                   className="btn btn-secondary"
                   onClick={fetchPriceData}
                   disabled={loading}
                 >
-                  {loading ? 'Loading...' : 'Refresh Data'}
+                  {loading ? 'Loading...' : 'Refresh'}
                 </button>
               </div>
             </div>
+
+            {dateFilterApplied && (
+              <div className="filter-status" style={{
+                padding: '10px',
+                backgroundColor: '#e3f2fd',
+                borderRadius: '4px',
+                marginBottom: '15px',
+                fontSize: '14px',
+                color: '#1976d2',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}>
+                <span>📅</span>
+                <span>Date filter applied: {startDate || 'Beginning'} to {endDate || 'End'}</span>
+              </div>
+            )}
 
             {error && (
               <div className="error-message" style={{ padding: '10px', backgroundColor: '#ffebee', color: '#d32f2f', borderRadius: '4px', marginBottom: '15px' }}>
