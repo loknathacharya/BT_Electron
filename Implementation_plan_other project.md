@@ -570,7 +570,7 @@ Notes & guidance:
 
 - [ ] **Subtask 1.2.4.2**: Implement OHLCV data viewer
   - Create interactive table with pagination (100 rows per page)
-  - Add candlestick chart preview using Recharts
+  - Add candlestick chart preview using Recharts.
   - Display data quality metrics (gaps, outliers)
   - Allow inline editing for data correction
 

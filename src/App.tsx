@@ -12,7 +12,8 @@ function Navigation() {
   const navItems = [
     { path: '/', label: 'Import Data' },
     { path: '/strategy', label: 'Build Strategy' },
-    { path: '/results', label: 'View Results' },
+    { path: '/data-management', label: 'Data Management' },
+    { path: '/results', label: 'Results & Analysis' },
   ];
 
   return (
@@ -44,6 +45,7 @@ function AppContent() {
         <Routes>
           <Route path="/" element={<ImportData />} />
           <Route path="/strategy" element={<BuildStrategy />} />
+          <Route path="/data-management" element={<ViewResults />} />
           <Route path="/results" element={<ViewResults />} />
         </Routes>
       </main>
