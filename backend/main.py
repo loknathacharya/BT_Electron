@@ -15,6 +15,7 @@ from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
+import re
 
 class DatabaseService:
     """SQLite database service for trading data with separate user and market databases"""
@@ -47,6 +48,127 @@ class DatabaseService:
         
         self.init_user_database()
         self.init_market_database()
+
+    # Saved scans CRUD
+    def save_scan(self, name: str, spec: dict, description: str = '') -> dict:
+        try:
+            with sqlite3.connect(self.user_db_path) as conn:
+                now = int(time.time())
+                conn.execute('''
+                    INSERT INTO saved_scans (name, description, spec_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(name) DO UPDATE SET description=excluded.description, spec_json=excluded.spec_json, updated_at=excluded.updated_at
+                ''', (name, description, json.dumps(spec), now, now))
+                conn.commit()
+            return {'success': True, 'name': name}
+        except Exception as e:
+            return {'error': str(e)}
+
+    def get_scans(self) -> dict:
+        try:
+            with sqlite3.connect(self.user_db_path) as conn:
+                cur = conn.execute('SELECT name, description, spec_json, created_at, updated_at FROM saved_scans ORDER BY updated_at DESC')
+                scans = []
+                for row in cur.fetchall():
+                    scans.append({
+                        'name': row[0],
+                        'description': row[1],
+                        'spec': json.loads(row[2]) if row[2] else {},
+                        'created_at': row[3],
+                        'updated_at': row[4]
+                    })
+            return {'success': True, 'scans': scans}
+        except Exception as e:
+            return {'error': str(e), 'scans': []}
+
+    def get_scan(self, name: str) -> dict:
+        try:
+            with sqlite3.connect(self.user_db_path) as conn:
+                cur = conn.execute('SELECT name, description, spec_json, created_at, updated_at FROM saved_scans WHERE name = ?', (name,))
+                row = cur.fetchone()
+                if not row:
+                    return {'error': f'scan "{name}" not found'}
+                return {
+                    'success': True,
+                    'scan': {
+                        'name': row[0], 'description': row[1], 'spec': json.loads(row[2]) if row[2] else {}, 'created_at': row[3], 'updated_at': row[4]
+                    }
+                }
+        except Exception as e:
+            return {'error': str(e)}
+
+    def delete_scan(self, name: str) -> dict:
+        try:
+            with sqlite3.connect(self.user_db_path) as conn:
+                conn.execute('DELETE FROM saved_scans WHERE name = ?', (name,))
+                conn.commit()
+            return {'success': True}
+        except Exception as e:
+            return {'error': str(e)}
+
+    # Watchlists CRUD
+    def save_watchlist(self, name: str, symbols: list[str], description: str = '') -> dict:
+        try:
+            with sqlite3.connect(self.user_db_path) as conn:
+                now = int(time.time())
+                conn.execute('''
+                    INSERT INTO watchlists (name, description, created_at, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(name) DO UPDATE SET description=excluded.description, updated_at=excluded.updated_at
+                ''', (name, description, now, now))
+                cur = conn.execute('SELECT id FROM watchlists WHERE name = ?', (name,))
+                row = cur.fetchone()
+                if not row:
+                    return {'error': 'failed to upsert watchlist'}
+                wid = row[0]
+                conn.execute('DELETE FROM watchlist_symbols WHERE watchlist_id = ?', (wid,))
+                conn.executemany('INSERT INTO watchlist_symbols (watchlist_id, symbol) VALUES (?, ?)', [(wid, s) for s in symbols])
+                conn.commit()
+            return {'success': True, 'name': name, 'count': len(symbols)}
+        except Exception as e:
+            return {'error': str(e)}
+
+    def get_watchlists(self) -> dict:
+        try:
+            with sqlite3.connect(self.user_db_path) as conn:
+                cur = conn.execute('SELECT id, name, description, created_at, updated_at FROM watchlists ORDER BY updated_at DESC')
+                lists = []
+                for row in cur.fetchall():
+                    wid = row[0]
+                    c2 = conn.execute('SELECT COUNT(*) FROM watchlist_symbols WHERE watchlist_id = ?', (wid,))
+                    cnt = c2.fetchone()[0]
+                    lists.append({'name': row[1], 'description': row[2], 'symbolCount': cnt, 'created_at': row[3], 'updated_at': row[4]})
+            return {'success': True, 'watchlists': lists}
+        except Exception as e:
+            return {'error': str(e), 'watchlists': []}
+
+    def get_watchlist_symbols(self, name: str) -> list[str]:
+        try:
+            with sqlite3.connect(self.user_db_path) as conn:
+                cur = conn.execute('SELECT id FROM watchlists WHERE name = ?', (name,))
+                row = cur.fetchone()
+                if not row:
+                    return []
+                wid = row[0]
+                cur2 = conn.execute('SELECT symbol FROM watchlist_symbols WHERE watchlist_id = ? ORDER BY symbol', (wid,))
+                return [r[0] for r in cur2.fetchall()]
+        except Exception:
+            return []
+
+    def delete_watchlist(self, name: str) -> dict:
+        try:
+            with sqlite3.connect(self.user_db_path) as conn:
+                cur = conn.execute('SELECT id FROM watchlists WHERE name = ?', (name,))
+                row = cur.fetchone()
+                if not row:
+                    return {'success': True}
+                wid = row[0]
+                conn.execute('DELETE FROM watchlist_symbols WHERE watchlist_id = ?', (wid,))
+                conn.execute('DELETE FROM watchlists WHERE id = ?', (wid,))
+                conn.commit()
+            return {'success': True}
+        except Exception as e:
+            return {'error': str(e)}
 
     def get_database_paths(self):
         """Return paths to both databases"""
@@ -125,6 +247,37 @@ class DatabaseService:
                         commission REAL DEFAULT 0,
                         status TEXT DEFAULT 'open',
                         FOREIGN KEY (backtest_id) REFERENCES backtest_results (id)
+                    )
+                ''')
+
+                # Saved scans
+                conn.execute('''
+                    CREATE TABLE IF NOT EXISTS saved_scans (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT UNIQUE NOT NULL,
+                        description TEXT,
+                        spec_json TEXT NOT NULL,
+                        created_at INTEGER DEFAULT (strftime('%s', 'now')),
+                        updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+                    )
+                ''')
+
+                # Watchlists and symbols
+                conn.execute('''
+                    CREATE TABLE IF NOT EXISTS watchlists (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT UNIQUE NOT NULL,
+                        description TEXT,
+                        created_at INTEGER DEFAULT (strftime('%s', 'now')),
+                        updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+                    )
+                ''')
+                conn.execute('''
+                    CREATE TABLE IF NOT EXISTS watchlist_symbols (
+                        watchlist_id INTEGER NOT NULL,
+                        symbol TEXT NOT NULL,
+                        PRIMARY KEY (watchlist_id, symbol),
+                        FOREIGN KEY (watchlist_id) REFERENCES watchlists (id)
                     )
                 ''')
 
@@ -554,6 +707,430 @@ class DatabaseService:
 
 # Global database service instance
 db_service = DatabaseService()
+_parse_dsl_timestamps: list[float] = []
+
+def _rate_limit_parse(now: float | None = None, max_per_window: int = 30, window_sec: int = 10) -> bool:
+    """Simple global rate limiter: allow up to max_per_window parse-dsl calls per window_sec."""
+    global _parse_dsl_timestamps
+    now = now or time.time()
+    # Drop old timestamps
+    _parse_dsl_timestamps = [t for t in _parse_dsl_timestamps if now - t <= window_sec]
+    if len(_parse_dsl_timestamps) >= max_per_window:
+        return False
+    _parse_dsl_timestamps.append(now)
+    return True
+
+def _validate_universe(universe: Any) -> Any:
+    """Validate/normalize universe; raise ValueError on invalid."""
+    if isinstance(universe, str):
+        s = universe.strip()
+        if len(s) > 200:
+            raise ValueError('universe string too long')
+        if s.upper() == 'ALL':
+            return 'ALL'
+        if s.upper().startswith('WATCHLIST:'):
+            name = s.split(':', 1)[1]
+            if not name or len(name) > 100:
+                raise ValueError('invalid watchlist name')
+            if not re.match(r'^[A-Za-z0-9 _\-]+$', name):
+                raise ValueError('invalid watchlist name')
+            return f'WATCHLIST:{name}'
+        # Allow comma-separated list? For strings we limit to ALL or WATCHLIST
+        raise ValueError('invalid universe string')
+    if isinstance(universe, list):
+        # Ensure reasonable size and safe symbols
+        if len(universe) > 2000:
+            raise ValueError('too many symbols in universe list')
+        cleaned = []
+        for sym in universe:
+            if not isinstance(sym, str) or len(sym) > 32 or not re.match(r'^[A-Za-z0-9_.\-]+$', sym):
+                raise ValueError('invalid symbol in universe list')
+            cleaned.append(sym)
+        return cleaned
+    if universe is None:
+        return 'ALL'
+    raise ValueError('invalid universe type')
+
+#########################
+# DSL Parser (minimal v1)
+#########################
+
+Token = tuple[str, str]
+
+class DSLTokenizer:
+    def __init__(self, text: str):
+        self.text = text
+        self.pos = 0
+        self.len = len(text)
+        self.current: Token | None = None
+
+    def _peek(self) -> str:
+        return self.text[self.pos] if self.pos < self.len else ''
+
+    def _advance(self) -> str:
+        ch = self._peek()
+        self.pos += 1
+        return ch
+
+    def _skip_ws(self):
+        while self._peek() and self._peek().isspace():
+            self._advance()
+
+    def _match(self, s: str) -> bool:
+        if self.text[self.pos:self.pos+len(s)].lower() == s.lower():
+            self.pos += len(s)
+            return True
+        return False
+
+    def next(self) -> Token:
+        self._skip_ws()
+        if self.pos >= self.len:
+            self.current = ('EOF', '')
+            return self.current
+        ch = self._peek()
+
+        # Symbols
+        if ch in '(),[]+-*/':
+            self._advance()
+            self.current = (ch, ch)
+            return self.current
+
+        # Comparators and brackets
+        if ch in '<>!=':
+            s = ch
+            self._advance()
+            if self._peek() == '=':
+                s += self._advance()
+            self.current = ('OP', s)
+            return self.current
+
+        # Numbers (int/float)
+        if ch.isdigit() or (ch == '.' and self.pos+1 < self.len and self.text[self.pos+1].isdigit()):
+            start = self.pos
+            has_dot = ch == '.'
+            self._advance()
+            while self._peek() and (self._peek().isdigit() or (self._peek() == '.' and not has_dot)):
+                if self._peek() == '.':
+                    has_dot = True
+                self._advance()
+            val = self.text[start:self.pos]
+            self.current = ('NUMBER', val)
+            return self.current
+
+        # Identifiers/keywords
+        if ch.isalpha() or ch == '_':
+            start = self.pos
+            while self._peek() and (self._peek().isalnum() or self._peek() in ['_', '.']):
+                self._advance()
+            ident = self.text[start:self.pos]
+            self.current = ('IDENT', ident)
+            return self.current
+
+        # Fallback single char
+        self._advance()
+        self.current = (ch, ch)
+        return self.current
+
+class DSLParseError(Exception):
+    def __init__(self, message: str, pos: int | None = None, token: Token | None = None):
+        super().__init__(message)
+        self.pos = pos
+        self.token = token
+
+class DSLParser:
+    def __init__(self, text: str):
+        self.tok = DSLTokenizer(text)
+        self.cur = self.tok.next()
+        self.depth = 0
+        self.max_depth = 200
+
+    def _eat(self, kind: str, value: str | None = None):
+        if self.cur[0] != kind or (value is not None and self.cur[1].lower() != value.lower()):
+            raise DSLParseError(f"Expected {kind} {value or ''}, found {self.cur}", pos=self.tok.pos, token=self.cur)
+        self.cur = self.tok.next()
+
+    def _check(self, kind: str, value: str | None = None) -> bool:
+        if self.cur[0] != kind:
+            return False
+        if value is not None and self.cur[1].lower() != value.lower():
+            return False
+        return True
+
+    # Grammar (simplified):
+    # expr := or_expr
+    # or_expr := and_expr (IDENT 'OR' and_expr)*
+    # and_expr := not_expr (IDENT 'AND' not_expr)*
+    # not_expr := (IDENT 'NOT')* comp_expr
+    # comp_expr := crossover_call | arith (OP comp arith)?
+    # crossover_call := IDENT 'CROSSES_ABOVE' '(' arith ',' arith ')' | idem for CROSSES_BELOW
+    # arith := term ((+|-) term)*
+    # term := factor ((*|/) factor)*
+    # factor := primary | offset primary | '(' expr ')'
+    # offset := '[' ('-' NUMBER | '=' NUMBER) ']'
+    # primary := attribute | number | func_call | indicator_call
+
+    def _guard_depth(self):
+        self.depth += 1
+        if self.depth > self.max_depth:
+            raise DSLParseError('Expression too deep', pos=self.tok.pos, token=self.cur)
+
+    def _leave_depth(self):
+        self.depth = max(0, self.depth - 1)
+
+    def parse(self):
+        self._guard_depth()
+        try:
+            node = self.parse_or()
+        finally:
+            self._leave_depth()
+        if not self._check('EOF'):
+            raise DSLParseError(f"Unexpected token {self.cur}", pos=self.tok.pos, token=self.cur)
+        return node
+
+    def parse_or(self):
+        self._guard_depth()
+        try:
+            nodes = [self.parse_and()]
+            while self._check('IDENT') and self.cur[1].upper() == 'OR':
+                self._eat('IDENT')
+                nodes.append(self.parse_and())
+            if len(nodes) == 1:
+                return nodes[0]
+            return {'op': 'group', 'logic': 'OR', 'children': nodes}
+        finally:
+            self._leave_depth()
+
+    def parse_and(self):
+        self._guard_depth()
+        try:
+            nodes = [self.parse_not()]
+            while self._check('IDENT') and self.cur[1].upper() == 'AND':
+                self._eat('IDENT')
+                nodes.append(self.parse_not())
+            if len(nodes) == 1:
+                return nodes[0]
+            return {'op': 'group', 'logic': 'AND', 'children': nodes}
+        finally:
+            self._leave_depth()
+
+    def parse_not(self):
+        self._guard_depth()
+        try:
+            not_count = 0
+            while self._check('IDENT') and self.cur[1].upper() == 'NOT':
+                self._eat('IDENT')
+                not_count += 1
+            node = self.parse_comp()
+            if not_count % 2 == 1:
+                return {'op': 'not', 'child': node}
+            return node
+        finally:
+            self._leave_depth()
+
+    def parse_comp(self):
+        # CROSSES_ABOVE/BELOW function form
+        if self._check('IDENT') and self.cur[1].upper() in ('CROSSES_ABOVE', 'CROSSES_BELOW'):
+            cross_type = self.cur[1].upper()
+            self._eat('IDENT')
+            self._eat('(')
+            left = self.parse_arith()
+            self._eat(',')
+            right = self.parse_arith()
+            self._eat(')')
+            return {'op': 'crossover', 'type': cross_type, 'left': left, 'right': right}
+        left = self.parse_arith()
+        if self._check('OP') and self.cur[1] in ('<', '<=', '>', '>=', '==', '!='):
+            op = self.cur[1]
+            self._eat('OP')
+            right = self.parse_arith()
+            return {'op': 'compare', 'cmp': op, 'left': left, 'right': right}
+        # standalone arith truthiness is allowed but we'll wrap as 'arith' filter
+        # Here, convert to boolean-arith filter to match engine, if it's an expr chain
+        if isinstance(left, dict) and left.get('type') == 'expr':
+            return {'op': 'arith', 'expr': left.get('expr', [])}
+        # Otherwise, compare to non-zero by default (rare)
+        return {'op': 'arith', 'expr': [left]}
+
+    def parse_arith(self):
+        self._guard_depth()
+        try:
+            node = self.parse_term()
+            parts: list[Any] = [node]
+            while self._check('+') or self._check('-'):
+                op = self.cur[1]
+                self._eat(op)
+                right = self.parse_term()
+                parts.append(op)
+                parts.append(right)
+            if len(parts) == 1:
+                return node
+            return {'type': 'expr', 'expr': parts}
+        finally:
+            self._leave_depth()
+
+    def parse_term(self):
+        self._guard_depth()
+        try:
+            node = self.parse_factor()
+            parts: list[Any] = [node]
+            while self._check('*') or self._check('/'):
+                op = self.cur[1]
+                self._eat(op)
+                right = self.parse_factor()
+                parts.append(op)
+                parts.append(right)
+            if len(parts) == 1:
+                return node
+            return {'type': 'expr', 'expr': parts}
+        finally:
+            self._leave_depth()
+
+    def parse_factor(self):
+        # Parentheses
+        if self._check('('):
+            self._eat('(')
+            node = self.parse_or()
+            self._eat(')')
+            return node
+        # Offset + primary
+        offset = None
+        if self._check('['):
+            self._eat('[')
+            if self._check('OP') and self.cur[1] == '-':
+                self._eat('OP')
+                if not self._check('NUMBER'):
+                    raise DSLParseError('Expected number after - in lookback')
+                bars = int(float(self.cur[1]))
+                self._eat('NUMBER')
+                offset = {'kind': 'lookback', 'bars': bars}
+            elif self._check('OP') and self.cur[1] == '=':
+                self._eat('OP')
+                if not self._check('NUMBER'):
+                    raise DSLParseError('Expected number after = in ordinal')
+                n = int(float(self.cur[1]))
+                self._eat('NUMBER')
+                offset = {'kind': 'ordinal', 'n': n}
+            else:
+                # Allow shorthand like [-1] where '-' may be a literal char, handle NUMBER next
+                sign = ''
+                if self._check('-'):
+                    sign = '-'
+                    self._eat('-')
+                if not self._check('NUMBER'):
+                    raise DSLParseError('Expected number inside offset []')
+                val = int(float(self.cur[1]))
+                self._eat('NUMBER')
+                if sign == '-':
+                    offset = {'kind': 'lookback', 'bars': val}
+                else:
+                    offset = {'kind': 'ordinal', 'n': val}
+            self._eat(']')
+        node = self.parse_primary()
+        if offset and isinstance(node, dict):
+            # Attach offset to measure/indicator/func
+            # For expr, wrap it
+            if node.get('type') in ('attr', 'indicator', 'func', 'const'):
+                node = {**node, 'offset': offset}
+            elif node.get('type') == 'expr':
+                node = {'type': 'expr', 'expr': node['expr'], 'offset': offset}
+        return node
+
+    def parse_primary(self):
+        # Number constant
+        if self._check('NUMBER'):
+            val = float(self.cur[1])
+            self._eat('NUMBER')
+            return {'type': 'const', 'value': val}
+        # Identifier-based
+        if self._check('IDENT'):
+            name = self.cur[1]
+            upper = name.upper()
+            lower = name.lower()
+            self._eat('IDENT')
+            # Function/indicator call
+            if self._check('('):
+                self._eat('(')
+                args = []
+                if not self._check(')'):
+                    args.append(self.parse_arith())
+                    while self._check(','):
+                        self._eat(',')
+                        args.append(self.parse_arith())
+                self._eat(')')
+                return self._build_call(upper, args)
+            # Attribute
+            if lower in ('open','high','low','close','volume'):
+                return {'type': 'attr', 'name': lower}
+            # Unknown identifier as attribute (fallback)
+            return {'type': 'attr', 'name': lower}
+        raise DSLParseError(f"Unexpected token {self.cur}", pos=self.tok.pos, token=self.cur)
+
+    def _build_call(self, upper: str, args: list[Any]):
+        # Cross handled in parse_comp
+        if upper in ('SMA','EMA','RSI'):
+            # SMA(src, period)
+            src = args[0] if args else {'type': 'attr', 'name': 'close'}
+            period = int(float(args[1]['value'])) if len(args) > 1 and isinstance(args[1], dict) and args[1].get('type') == 'const' else 20
+            return {'type': 'indicator', 'name': upper, 'params': {'src': src, 'period': period}}
+        if upper == 'MACD':
+            src = args[0] if args else {'type': 'attr', 'name': 'close'}
+            fast = int(float(args[1]['value'])) if len(args) > 1 and args[1].get('type') == 'const' else 12
+            slow = int(float(args[2]['value'])) if len(args) > 2 and args[2].get('type') == 'const' else 26
+            signal = int(float(args[3]['value'])) if len(args) > 3 and args[3].get('type') == 'const' else 9
+            return {'type': 'indicator', 'name': 'MACD', 'params': {'src': src, 'fast': fast, 'slow': slow, 'signal': signal}}
+        if upper == 'ADX':
+            period = int(float(args[0]['value'])) if args and args[0].get('type') == 'const' else 14
+            return {'type': 'indicator', 'name': 'ADX', 'params': {'period': period}}
+        if upper == 'ATR':
+            period = int(float(args[0]['value'])) if args and args[0].get('type') == 'const' else 14
+            return {'type': 'indicator', 'name': 'ATR', 'params': {'period': period}}
+        if upper == 'VWAP':
+            return {'type': 'indicator', 'name': 'VWAP', 'params': {}}
+        if upper in ('BOLLINGERMIDDLE','BOLLINGERMID','BBMIDDLE','BBMID'):
+            src = args[0] if args else {'type': 'attr', 'name': 'close'}
+            period = int(float(args[1]['value'])) if len(args) > 1 and args[1].get('type') == 'const' else 20
+            std = float(args[2]['value']) if len(args) > 2 and args[2].get('type') == 'const' else 2.0
+            return {'type': 'indicator', 'name': 'BB_MIDDLE', 'params': {'src': src, 'period': period, 'std': std}}
+        if upper in ('BOLLINGERUPPER','BBUPPER'):
+            src = args[0] if args else {'type': 'attr', 'name': 'close'}
+            period = int(float(args[1]['value'])) if len(args) > 1 and args[1].get('type') == 'const' else 20
+            std = float(args[2]['value']) if len(args) > 2 and args[2].get('type') == 'const' else 2.0
+            return {'type': 'indicator', 'name': 'BB_UPPER', 'params': {'src': src, 'period': period, 'std': std}}
+        if upper in ('BOLLINGERLOWER','BBLOWER'):
+            src = args[0] if args else {'type': 'attr', 'name': 'close'}
+            period = int(float(args[1]['value'])) if len(args) > 1 and args[1].get('type') == 'const' else 20
+            std = float(args[2]['value']) if len(args) > 2 and args[2].get('type') == 'const' else 2.0
+            return {'type': 'indicator', 'name': 'BB_LOWER', 'params': {'src': src, 'period': period, 'std': std}}
+        if upper in ('MAX','MIN'):
+            # MAX(n, measure)
+            if not args:
+                raise DSLParseError(f"{upper} requires at least 1 argument")
+            if len(args) == 1:
+                period = int(float(args[0]['value'])) if args[0].get('type') == 'const' else 14
+                meas = {'type': 'attr', 'name': 'close'}
+            else:
+                period = int(float(args[0]['value'])) if args[0].get('type') == 'const' else 14
+                meas = args[1]
+            return {'type': 'func', 'name': upper, 'period': period, 'measure': meas}
+        # Default: treat as attribute
+        return {'type': 'attr', 'name': upper.lower()}
+
+def parse_dsl_to_filter_node(text: str) -> dict:
+    parser = DSLParser(text)
+    node = parser.parse()
+    # normalize 'logical' alias for group
+    if isinstance(node, dict) and node.get('op') == 'group' and 'logic' in node:
+        return node
+    return node
+
+def dsl_to_scanner_spec(text: str, timeframe: str | None = None, universe: Any | None = None) -> dict:
+    filters_node = parse_dsl_to_filter_node(text)
+    filters = [filters_node] if filters_node else []
+    return {
+        'timeframe': (timeframe or '1D').upper(),
+        'universe': universe if universe is not None else 'ALL',
+        'filters': filters
+    }
 
 class ValidationError(Exception):
     """Custom exception for validation errors"""
@@ -1092,6 +1669,33 @@ def handle_request(request, db_service_override=None):
                     'error': f'Failed to fetch price data: {str(e)}',
                     'requestId': request_id
                 }
+        elif request.get('action') == 'parse-dsl':
+            try:
+                data = request.get('data', {}) or {}
+                dsl = data.get('dsl') or data.get('text')
+                timeframe = data.get('timeframe')
+                universe = data.get('universe')
+                if not dsl or not isinstance(dsl, str):
+                    return {'error': 'dsl string is required', 'requestId': request_id}
+                if len(dsl) > 5000:
+                    return {'error': 'DSL too long', 'requestId': request_id}
+                if not _rate_limit_parse():
+                    return {'error': 'rate_limited', 'retryAfterMs': 1000, 'requestId': request_id}
+                try:
+                    universe = _validate_universe(universe)
+                except Exception as ve:
+                    return {'error': f'invalid_universe: {ve}', 'requestId': request_id}
+                spec = dsl_to_scanner_spec(dsl, timeframe=timeframe, universe=universe)
+                return {'success': True, 'scannerSpec': spec, 'requestId': request_id}
+            except DSLParseError as pe:
+                payload = {'error': 'ParseError', 'message': str(pe), 'requestId': request_id}
+                if hasattr(pe, 'pos') and pe.pos is not None:
+                    payload['pos'] = pe.pos
+                if hasattr(pe, 'token') and pe.token is not None:
+                    payload['token'] = pe.token
+                return payload
+            except Exception as e:
+                return {'error': f'Failed to parse DSL: {e}', 'requestId': request_id}
         elif request.get('action') == 'get-datasets':
             """Get list of all available datasets"""
             try:
@@ -1103,6 +1707,89 @@ def handle_request(request, db_service_override=None):
                     'error': f'Failed to fetch datasets: {str(e)}',
                     'requestId': request_id
                 }
+        elif request.get('action') == 'save-scan':
+            try:
+                data = request.get('data', {}) or {}
+                name = data.get('name')
+                spec = data.get('spec') or data.get('scannerSpec') or {}
+                description = data.get('description', '')
+                if not name or not isinstance(spec, dict):
+                    return {'error': 'name and spec are required', 'requestId': request_id}
+                result = current_db_service.save_scan(name, spec, description)
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to save scan: {e}', 'requestId': request_id}
+        elif request.get('action') == 'get-scans':
+            try:
+                result = current_db_service.get_scans()
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to get scans: {e}', 'requestId': request_id}
+        elif request.get('action') == 'get-scan':
+            try:
+                data = request.get('data', {}) or {}
+                name = data.get('name')
+                if not name:
+                    return {'error': 'name is required', 'requestId': request_id}
+                result = current_db_service.get_scan(name)
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to get scan: {e}', 'requestId': request_id}
+        elif request.get('action') == 'delete-scan':
+            try:
+                data = request.get('data', {}) or {}
+                name = data.get('name')
+                if not name:
+                    return {'error': 'name is required', 'requestId': request_id}
+                result = current_db_service.delete_scan(name)
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to delete scan: {e}', 'requestId': request_id}
+        elif request.get('action') == 'save-watchlist':
+            try:
+                data = request.get('data', {}) or {}
+                name = data.get('name')
+                symbols = data.get('symbols') or []
+                description = data.get('description', '')
+                if not name or not isinstance(symbols, list):
+                    return {'error': 'name and symbols(list) are required', 'requestId': request_id}
+                result = current_db_service.save_watchlist(name, symbols, description)
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to save watchlist: {e}', 'requestId': request_id}
+        elif request.get('action') == 'get-watchlists':
+            try:
+                result = current_db_service.get_watchlists()
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to get watchlists: {e}', 'requestId': request_id}
+        elif request.get('action') == 'get-watchlist-symbols':
+            try:
+                data = request.get('data', {}) or {}
+                name = data.get('name')
+                if not name:
+                    return {'error': 'name is required', 'requestId': request_id}
+                syms = current_db_service.get_watchlist_symbols(name)
+                return {'success': True, 'name': name, 'symbols': syms, 'requestId': request_id}
+            except Exception as e:
+                return {'error': f'Failed to get watchlist symbols: {e}', 'requestId': request_id}
+        elif request.get('action') == 'delete-watchlist':
+            try:
+                data = request.get('data', {}) or {}
+                name = data.get('name')
+                if not name:
+                    return {'error': 'name is required', 'requestId': request_id}
+                result = current_db_service.delete_watchlist(name)
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to delete watchlist: {e}', 'requestId': request_id}
         elif request.get('action') == 'get-dataset':
             """Get specific dataset by name"""
             try:
@@ -1483,7 +2170,16 @@ def handle_request(request, db_service_override=None):
             t0 = time.time()
             try:
                 data = request.get('data', {}) or {}
-                scanner_spec = data.get('scannerSpec') or data.get('spec') or {}
+                # If a raw DSL string is provided, parse into scannerSpec
+                raw_dsl = data.get('dsl')
+                if isinstance(raw_dsl, str):
+                    try:
+                        dsl_spec = dsl_to_scanner_spec(raw_dsl, timeframe=data.get('timeframe'), universe=data.get('universe'))
+                        scanner_spec = dsl_spec
+                    except DSLParseError as pe:
+                        return {'error': f'DSL parse error: {str(pe)}', 'requestId': request_id}
+                else:
+                    scanner_spec = data.get('scannerSpec') or data.get('spec') or {}
                 options = data.get('options') or {}
                 print(f"SCAN: start requestId={request_id}, timeframe={scanner_spec.get('timeframe')}, includeExplain={options.get('includeExplain', False)}", file=sys.stderr)
 
@@ -1574,7 +2270,16 @@ def handle_request(request, db_service_override=None):
                             return _fetch_with_conn(conn)
                 
                 with sqlite3.connect(current_db_service.market_db_path) as conn:
-                    if isinstance(universe, list) and len(universe) > 0:
+                    if isinstance(universe, str) and universe.upper().startswith('WATCHLIST:'):
+                        wl_name = universe.split(':', 1)[1]
+                        # Resolve watchlist symbols from user DB
+                        wl_syms = current_db_service.get_watchlist_symbols(wl_name)
+                        if wl_syms:
+                            placeholders = ','.join('?' for _ in wl_syms)
+                            cursor = conn.execute(f"SELECT DISTINCT symbol FROM price_data WHERE symbol IN ({placeholders}) ORDER BY symbol", tuple(wl_syms))
+                        else:
+                            cursor = conn.execute("SELECT DISTINCT symbol FROM price_data WHERE 1=0")
+                    elif isinstance(universe, list) and len(universe) > 0:
                         # Validate existence
                         placeholders = ','.join('?' for _ in universe)
                         cursor = conn.execute(f"SELECT DISTINCT symbol FROM price_data WHERE symbol IN ({placeholders}) ORDER BY symbol", tuple(universe))
@@ -2056,6 +2761,96 @@ def handle_request(request, db_service_override=None):
                     # Unknown op
                     return False
 
+                def eval_expr_series(expr_tokens: list[Any], df: pd.DataFrame, symbol: str, main_timeframe: str, df_index: pd.Index) -> pd.Series:
+                    # Helper for vector arithmetic into a numeric series
+                    if not expr_tokens:
+                        return pd.Series(np.nan, index=df_index)
+                    # Resolve tokens into series/numbers/operators
+                    resolved: list[Any] = []
+                    for token in expr_tokens:
+                        if isinstance(token, dict):
+                            s = eval_measure(token, df, symbol, main_timeframe)
+                            resolved.append(s.reindex(df_index))
+                        else:
+                            resolved.append(token)
+                    result_series = resolved[0]
+                    if not isinstance(result_series, pd.Series):
+                        result_series = pd.Series(result_series, index=df_index)
+                    i = 1
+                    while i < len(resolved):
+                        op2 = resolved[i]
+                        rhs = resolved[i+1] if i+1 < len(resolved) else np.nan
+                        rhs_series = rhs.reindex(df_index) if isinstance(rhs, pd.Series) else pd.Series(rhs, index=df_index)
+                        if op2 == '+':
+                            result_series = result_series + rhs_series
+                        elif op2 == '-':
+                            result_series = result_series - rhs_series
+                        elif op2 == '*':
+                            result_series = result_series * rhs_series
+                        elif op2 == '/':
+                            rhs_safe = rhs_series.replace(0, np.nan)
+                            result_series = result_series / rhs_safe
+                        i += 2
+                    return result_series
+
+                def eval_filter_series(node, df: pd.DataFrame, symbol: str = '', main_timeframe: str = '1D') -> pd.Series:
+                    """Vectorized evaluation of a filter, returning a boolean Series over time."""
+                    index_ref = df.index
+                    if not isinstance(node, dict):
+                        return pd.Series(False, index=index_ref)
+                    op = node.get('op')
+                    if op in ('group', 'logical'):
+                        logic = node.get('logic', 'AND').upper()
+                        children = node.get('children', []) or []
+                        if not children:
+                            return pd.Series(True, index=index_ref) if logic == 'AND' else pd.Series(False, index=index_ref)
+                        series_list = [eval_filter_series(ch, df, symbol, main_timeframe) for ch in children]
+                        res = series_list[0]
+                        for s in series_list[1:]:
+                            res = (res & s) if logic == 'AND' else (res | s)
+                        return res.fillna(False)
+                    if op == 'not':
+                        child = eval_filter_series(node.get('child'), df, symbol, main_timeframe)
+                        return (~child).fillna(False)
+                    if op == 'compare':
+                        cmp_op = node.get('cmp')
+                        left = eval_measure(node.get('left'), df, symbol, main_timeframe).reindex(index_ref)
+                        right = eval_measure(node.get('right'), df, symbol, main_timeframe).reindex(index_ref)
+                        mask_valid = left.notna() & right.notna()
+                        result = pd.Series(False, index=index_ref)
+                        if cmp_op == '>':
+                            result = left > right
+                        elif cmp_op == '>=':
+                            result = left >= right
+                        elif cmp_op == '<':
+                            result = left < right
+                        elif cmp_op == '<=':
+                            result = left <= right
+                        elif cmp_op == '==':
+                            result = (left - right).abs() <= 1e-8
+                        elif cmp_op == '!=':
+                            result = (left - right).abs() > 1e-8
+                        result = result & mask_valid
+                        return result.fillna(False)
+                    if op == 'crossover':
+                        cross_type = node.get('type', 'CROSSES_ABOVE').upper()
+                        left = eval_measure(node.get('left'), df, symbol, main_timeframe).reindex(index_ref)
+                        right = eval_measure(node.get('right'), df, symbol, main_timeframe).reindex(index_ref)
+                        l_prev = left.shift(1)
+                        r_prev = right.shift(1)
+                        mask_valid = left.notna() & right.notna() & l_prev.notna() & r_prev.notna()
+                        if cross_type == 'CROSSES_ABOVE':
+                            result = (l_prev <= r_prev) & (left > right)
+                        else:
+                            result = (l_prev >= r_prev) & (left < right)
+                        result = result & mask_valid
+                        return result.fillna(False)
+                    if op == 'arith':
+                        expr = node.get('expr', []) or []
+                        series_val = eval_expr_series(expr, df, symbol, main_timeframe, index_ref)
+                        return series_val.notna() & (series_val != 0)
+                    return pd.Series(False, index=index_ref)
+
                 # Phase 4: Helper function to process a single symbol (for parallel execution)
                 def process_symbol(sym: str, db_path: str, include_explain: bool):
                     """Process a single symbol and return result if matched, else None"""
@@ -2100,7 +2895,9 @@ def handle_request(request, db_service_override=None):
                 max_workers = min(6, max(2, (os.cpu_count() or 4)))
                 use_parallel = len(symbols_list) > 10  # Only parallelize for >10 symbols
                 
-                if use_parallel:
+                # Backtest mode evaluates across time; use sequential for clarity/perf predictability initially
+                is_backtest = (str(options.get('mode', 'latest')).lower() == 'backtest') or bool(options.get('backtest', False))
+                if use_parallel and not is_backtest:
                     # Parallel execution
                     with ThreadPoolExecutor(max_workers=max_workers) as executor:
                         # Submit all tasks
@@ -2173,32 +2970,47 @@ def handle_request(request, db_service_override=None):
                                     pass
                                 last_progress_ts = now
                             continue
-                        
-                        # Phase 4: Collect explain values for this symbol
-                        explain_vals = {} if options.get('includeExplain', False) else None
-                        
-                        # Evaluate all filters; top-level 'filters' is AND of entries
-                        match_all = True
-                        for fnode in filters:
-                            if not eval_filter(fnode, df, sym, explain_vals, timeframe):
-                                match_all = False
-                                break
-                        
-                        elapsed_ms = int((time.time() - t_sym) * 1000)
-                        symbol_timings.append((sym, elapsed_ms))
-                        if match_all:
-                            result_entry = {
-                                'symbol': sym,
-                                'timestamp': int(pd.Timestamp(df.index[-1]).timestamp())
-                            }
-                            # Phase 4: Add explain values if requested
-                            if explain_vals:
-                                result_entry['values'] = explain_vals
-                                # Also add alias key 'explain' for UI compatibility
-                                result_entry['explain'] = explain_vals
-                            if options.get('includeExplain', False):
-                                result_entry['timingMs'] = elapsed_ms
-                            results.append(result_entry)
+                        if is_backtest:
+                            # Evaluate vectorized match series across time
+                            combined = None
+                            for fnode in filters:
+                                series_bool = eval_filter_series(fnode, df, sym, timeframe)
+                                combined = series_bool if combined is None else (combined & series_bool)
+                            combined = (combined.fillna(False)) if combined is not None else pd.Series(False, index=df.index)
+                            # Extract match timestamps; apply per-symbol cap (newest first)
+                            match_idx = combined[combined].index
+                            per_cap = 0
+                            try:
+                                per_cap = int(options.get('backtestLimitPerSymbol', 1000))
+                            except Exception:
+                                per_cap = 1000
+                            if per_cap > 0 and len(match_idx) > per_cap:
+                                match_idx = match_idx[-per_cap:]
+                            if len(match_idx) > 0:
+                                match_list = [{'timestamp': int(pd.Timestamp(ts).timestamp())} for ts in match_idx]
+                                results.append({'symbol': sym, 'matches': match_list, 'matchCount': len(match_list)})
+                        else:
+                            # Phase 4: Collect explain values for this symbol
+                            explain_vals = {} if options.get('includeExplain', False) else None
+                            # Evaluate all filters; top-level 'filters' is AND of entries
+                            match_all = True
+                            for fnode in filters:
+                                if not eval_filter(fnode, df, sym, explain_vals, timeframe):
+                                    match_all = False
+                                    break
+                            elapsed_ms = int((time.time() - t_sym) * 1000)
+                            symbol_timings.append((sym, elapsed_ms))
+                            if match_all:
+                                result_entry = {
+                                    'symbol': sym,
+                                    'timestamp': int(pd.Timestamp(df.index[-1]).timestamp())
+                                }
+                                if explain_vals:
+                                    result_entry['values'] = explain_vals
+                                    result_entry['explain'] = explain_vals
+                                if options.get('includeExplain', False):
+                                    result_entry['timingMs'] = elapsed_ms
+                                results.append(result_entry)
                         # Emit progress periodically
                         now = time.time()
                         if (now - last_progress_ts) >= 0.5 or (scanned % 50 == 0):
@@ -2228,7 +3040,10 @@ def handle_request(request, db_service_override=None):
                 # Apply pagination
                 offset = options.get('offset', 0)
                 limit = options.get('limit', 5000)
-                total_matches = len(results)
+                if is_backtest:
+                    total_matches = sum((len(r.get('matches', [])) for r in results))
+                else:
+                    total_matches = len(results)
                 results = results[offset:offset + limit] if limit > 0 else results[offset:]
 
                 # Prepare optional slowest symbols stats when includeExplain is enabled
@@ -2242,17 +3057,32 @@ def handle_request(request, db_service_override=None):
                     except Exception:
                         pass
 
-                resp = {
-                    'results': results,
-                    'stats': {
-                        'scannedSymbols': scanned,
-                        'totalMatches': total_matches,
-                        'returnedMatches': len(results),
-                        'timeMs': int((time.time() - t0) * 1000),
-                        **extra_stats
-                    },
-                    'requestId': request_id
+                stats_base = {
+                    'scannedSymbols': scanned,
+                    'timeMs': int((time.time() - t0) * 1000),
+                    **extra_stats
                 }
+                if is_backtest:
+                    resp = {
+                        'results': results,
+                        'stats': {
+                            **stats_base,
+                            'mode': 'backtest',
+                            'totalMatchBars': total_matches,
+                            'returnedSymbols': len(results)
+                        },
+                        'requestId': request_id
+                    }
+                else:
+                    resp = {
+                        'results': results,
+                        'stats': {
+                            **stats_base,
+                            'totalMatches': total_matches,
+                            'returnedMatches': len(results)
+                        },
+                        'requestId': request_id
+                    }
                 # Emit done event
                 try:
                     print(json.dumps({

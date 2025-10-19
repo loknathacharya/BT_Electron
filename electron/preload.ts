@@ -22,10 +22,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'open-file-dialog',
       'preview-file',
       'import-data',
+  'parse-dsl',
       'run-scan',
+      // datasets
       'get-datasets',
       'get-dataset',
       'create-dataset',
+      // scans CRUD
+      'save-scan',
+      'get-scans',
+      'get-scan',
+      'delete-scan',
+      // watchlists CRUD
+      'save-watchlist',
+      'get-watchlists',
+      'get-watchlist-symbols',
+      'delete-watchlist',
       'run-backtest',
       'get-strategies',
       'save-strategy',

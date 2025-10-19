@@ -110,6 +110,20 @@ const Scanner: React.FC = () => {
   const [includeExplain, setIncludeExplain] = useState(false);
   const [dateFrom, setDateFrom] = useState<string>('');
   const [dateTo, setDateTo] = useState<string>('');
+  // DSL editor state
+  const [useDsl, setUseDsl] = useState(false);
+  const [dslText, setDslText] = useState<string>('');
+  const [dslParse, setDslParse] = useState<{ ok: boolean; spec?: any; error?: string; pos?: number; token?: any } | null>(null);
+  const [backtestMode, setBacktestMode] = useState<boolean>(false);
+  const [backtestPerSymbolCap, setBacktestPerSymbolCap] = useState<number>(500);
+
+  // Simple in-memory cache for parsed DSL
+  const dslCacheRef = React.useRef<Map<string, any>>(new Map());
+  const dslKey = useMemo(() => {
+    if (!useDsl || !dslText) return '';
+    const uni = universeMode === 'ALL' ? 'ALL' : universeList;
+    return `${dslText}::${timeframe}::${uni}`;
+  }, [useDsl, dslText, timeframe, universeMode, universeList]);
 
   const scannerSpec = useMemo(() => {
     const spec: any = {
@@ -141,19 +155,36 @@ const Scanner: React.FC = () => {
       setLoading(true);
       setError(null);
       setCurrentPage(0); // Reset to first page on new scan
-      const response = await window.electronAPI.invoke('run-scan', {
-        scannerSpec,
-        options: {
-          latestOnly: true,
-          sort: { by: sortBy, order: sortOrder },
-          offset: 0,
-          limit: 5000, // Get all, we'll paginate in UI
-          maxSymbols: maxSymbols > 0 ? maxSymbols : undefined,
-          includeExplain: includeExplain || undefined,
-          dateFrom: dateFrom || undefined,
-          dateTo: dateTo || undefined,
-        },
-      });
+      const uni = universeMode === 'ALL' ? 'ALL' : universeList.split(',').map(s => s.trim()).filter(Boolean);
+      const baseOptions: any = {
+        latestOnly: !backtestMode,
+        sort: { by: sortBy, order: sortOrder },
+        offset: 0,
+        limit: 5000,
+        maxSymbols: maxSymbols > 0 ? maxSymbols : undefined,
+        includeExplain: includeExplain || undefined,
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
+      };
+      if (backtestMode) {
+        baseOptions.mode = 'backtest';
+        baseOptions.backtestLimitPerSymbol = backtestPerSymbolCap || 500;
+      }
+      let payload: any;
+      if (useDsl && dslText.trim()) {
+        payload = {
+          dsl: dslText,
+          timeframe,
+          universe: universeMode === 'ALL' ? 'ALL' : uni,
+          options: baseOptions,
+        };
+      } else {
+        payload = {
+          scannerSpec,
+          options: baseOptions,
+        };
+      }
+      const response = await window.electronAPI.invoke('run-scan', payload);
       setResult(response);
       if (response?.error) setError(response.error);
       // Clear progress when done
@@ -172,15 +203,15 @@ const Scanner: React.FC = () => {
   const addFilter = () => setFilters(prev => [...prev, initialFilter()]);
   const removeFilter = (id: string) => setFilters(prev => prev.filter(f => f.id !== id));
 
-  const allResults = (result?.results || []) as Array<{ symbol: string; timestamp: number; explain?: Record<string, any> }>;
+  const rawResults = (result?.results || []) as any[];
   const stats = result?.stats;
   
   // Client-side pagination
-  const totalResults = allResults.length;
+  const totalResults = rawResults.length;
   const totalPages = Math.ceil(totalResults / pageSize);
   const startIdx = currentPage * pageSize;
   const endIdx = Math.min(startIdx + pageSize, totalResults);
-  const results = allResults.slice(startIdx, endIdx);
+  const results = rawResults.slice(startIdx, endIdx);
 
   const navigate = useNavigate();
 
@@ -331,7 +362,101 @@ const Scanner: React.FC = () => {
         {/* Filter Builder */}
         <div style={{ background: '#f9f9f9', border: '1px solid #e0e0e0', borderRadius: 8, padding: 12 }}>
           <h4 style={{ marginTop: 0 }}>Filters</h4>
-          {useBuilder ? (
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 8 }}>
+            <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+              <input type="checkbox" checked={useBuilder && !useDsl} onChange={(e) => { setUseBuilder(e.target.checked); if (e.target.checked) setUseDsl(false); }} />
+              Use Builder
+            </label>
+            <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+              <input type="checkbox" checked={useDsl} onChange={(e) => { setUseDsl(e.target.checked); if (e.target.checked) setUseBuilder(false); }} />
+              Use DSL
+            </label>
+            <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+              <input type="checkbox" checked={backtestMode} onChange={(e) => setBacktestMode(e.target.checked)} />
+              Backtest mode
+            </label>
+            {backtestMode && (
+              <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                <span>Per-symbol cap</span>
+                <input type="number" min={1} max={5000} value={backtestPerSymbolCap} onChange={(e) => setBacktestPerSymbolCap(Number(e.target.value) || 500)} style={{ width: 90 }} />
+              </span>
+            )}
+          </div>
+          {useDsl ? (
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8 }}>
+                <textarea
+                  value={dslText}
+                  onChange={(e) => setDslText(e.target.value)}
+                  placeholder="Enter DSL, e.g.:\nSMA(close, 50) CROSSES_ABOVE SMA(close, 200) AND RSI(close, 14) > 70"
+                  style={{ width: '100%', minHeight: 120, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', fontSize: 13, padding: 8 }}
+                />
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <button
+                    className="btn btn-secondary"
+                    onClick={async () => {
+                      try {
+                        setDslParse(null);
+                        // Cache check
+                        if (dslKey && dslCacheRef.current.has(dslKey)) {
+                          const cached = dslCacheRef.current.get(dslKey);
+                          setDslParse({ ok: true, spec: cached });
+                          return;
+                        }
+                        const uni = universeMode === 'ALL' ? 'ALL' : universeList.split(',').map(s => s.trim()).filter(Boolean);
+                        const res = await window.electronAPI.invoke('parse-dsl', { dsl: dslText, timeframe, universe: universeMode === 'ALL' ? 'ALL' : uni });
+                        if (res?.error) {
+                          const message = res.error === 'ParseError' ? res.message : res.error;
+                          setDslParse({ ok: false, error: message, pos: res.pos, token: res.token });
+                        } else {
+                          setDslParse({ ok: true, spec: res.scannerSpec });
+                          if (dslKey) dslCacheRef.current.set(dslKey, res.scannerSpec);
+                        }
+                      } catch (err: any) {
+                        setDslParse({ ok: false, error: err?.message || 'parse failed' });
+                      }
+                    }}
+                  >Parse</button>
+                  <button
+                    className="btn btn-secondary"
+                    onClick={() => {
+                      setDslText('SMA(close, 50) CROSSES_ABOVE SMA(close, 200) AND RSI(close, 14) > 70');
+                    }}
+                  >Example 1</button>
+                  <button
+                    className="btn btn-secondary"
+                    onClick={() => {
+                      setDslText('MAX(252, high) == high');
+                    }}
+                  >Example 2</button>
+                  <button
+                    className="btn btn-secondary"
+                    onClick={() => {
+                      setDslText('[-1] close * 1.03 < open');
+                    }}
+                  >Example 3</button>
+                </div>
+              </div>
+              <div style={{ marginTop: 8 }}>
+                {dslParse?.ok && (
+                  <>
+                    <div style={{ color: '#2e7d32' }}>Parsed ✓</div>
+                    <pre style={{ background: '#f7f7f7', padding: 8, borderRadius: 4, maxHeight: 180, overflow: 'auto' }}>{JSON.stringify(dslParse.spec, null, 2)}</pre>
+                  </>
+                )}
+                {dslParse && !dslParse.ok && (
+                  <div style={{ color: '#c62828' }}>
+                    {dslParse.error}
+                    {typeof dslParse.pos === 'number' && (
+                      <>
+                        <div style={{ fontSize: 12, marginTop: 4 }}>At position: {dslParse.pos}</div>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            </>
+          ) : useBuilder ? (
             <>
               <p style={{ color: '#666', marginTop: 0 }}>Build conditions with tokens. Toggle AND/OR for groups. Click tokens to edit timeframe, parameters, offsets.</p>
               <ScannerBuilder value={builderTree || undefined} onChange={setBuilderTree as any} />
@@ -341,8 +466,7 @@ const Scanner: React.FC = () => {
               <p style={{ color: '#666', marginTop: 0 }}>Simple rows mode (legacy). All rows ANDed.</p>
               {filters.map((f) => (
                 <div key={f.id} style={{ padding: 10, border: '1px solid #ddd', borderRadius: 6, marginBottom: 10, background: '#fff' }}>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto', gap: 8, alignItems: 'end' }}>
-                    {/* Operation */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                     <div>
                       <label>Operation</label>
                       <select
@@ -354,7 +478,7 @@ const Scanner: React.FC = () => {
                         <option value="crossover">Crossover</option>
                       </select>
                     </div>
-                    {f.op === 'compare' && (
+                    {f.op === 'compare' ? (
                       <div>
                         <label>Compare</label>
                         <select
@@ -370,8 +494,7 @@ const Scanner: React.FC = () => {
                           <option value="!=">!=</option>
                         </select>
                       </div>
-                    )}
-                    {f.op === 'crossover' && (
+                    ) : (
                       <div>
                         <label>Cross Type</label>
                         <select
@@ -384,10 +507,10 @@ const Scanner: React.FC = () => {
                         </select>
                       </div>
                     )}
-                    {/* Left/right editors omitted for brevity in legacy mode */}
-                    <div style={{ alignSelf: 'center' }}>
-                      <button className="btn btn-secondary" onClick={() => removeFilter(f.id)}>Remove</button>
-                    </div>
+                  </div>
+                  {/* Left/right editors omitted for brevity in legacy mode */}
+                  <div style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end' }}>
+                    <button className="btn btn-secondary" onClick={() => removeFilter(f.id)}>Remove</button>
                   </div>
                 </div>
               ))}

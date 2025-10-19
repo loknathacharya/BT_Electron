@@ -593,3 +593,120 @@ ipcMain.handle('run-scan', async (_event, data) => {
     };
   }
 });
+
+// Saved scans CRUD handlers
+ipcMain.handle('save-scan', async (_event, data) => {
+  try {
+    const { name, spec, description } = data || {};
+    if (!name || !spec) {
+      throw new Error('name and spec are required');
+    }
+    const result = await pythonService.sendToPython('save-scan', { name, spec, description }) as any;
+    if (result.error) throw new Error(result.error);
+    return result;
+  } catch (error) {
+    console.error('Error in save-scan:', error);
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+});
+
+ipcMain.handle('get-scans', async () => {
+  try {
+    const result = await pythonService.sendToPython('get-scans') as any;
+    if (result.error) throw new Error(result.error);
+    return result;
+  } catch (error) {
+    console.error('Error in get-scans:', error);
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+});
+
+ipcMain.handle('get-scan', async (_event, data) => {
+  try {
+    const { name } = data || {};
+    if (!name) throw new Error('name is required');
+    const result = await pythonService.sendToPython('get-scan', { name }) as any;
+    if (result.error) throw new Error(result.error);
+    return result;
+  } catch (error) {
+    console.error('Error in get-scan:', error);
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+});
+
+ipcMain.handle('delete-scan', async (_event, data) => {
+  try {
+    const { name } = data || {};
+    if (!name) throw new Error('name is required');
+    const result = await pythonService.sendToPython('delete-scan', { name }) as any;
+    if (result.error) throw new Error(result.error);
+    return result;
+  } catch (error) {
+    console.error('Error in delete-scan:', error);
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+});
+
+// Watchlists CRUD handlers
+ipcMain.handle('save-watchlist', async (_event, data) => {
+  try {
+    const { name, symbols, description } = data || {};
+    if (!name || !symbols) throw new Error('name and symbols are required');
+    const result = await pythonService.sendToPython('save-watchlist', { name, symbols, description }) as any;
+    if (result.error) throw new Error(result.error);
+    return result;
+  } catch (error) {
+    console.error('Error in save-watchlist:', error);
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+});
+
+ipcMain.handle('get-watchlists', async () => {
+  try {
+    const result = await pythonService.sendToPython('get-watchlists') as any;
+    if (result.error) throw new Error(result.error);
+    return result;
+  } catch (error) {
+    console.error('Error in get-watchlists:', error);
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+});
+
+ipcMain.handle('get-watchlist-symbols', async (_event, data) => {
+  try {
+    const { name } = data || {};
+    if (!name) throw new Error('name is required');
+    const result = await pythonService.sendToPython('get-watchlist-symbols', { name }) as any;
+    if (result.error) throw new Error(result.error);
+    return result;
+  } catch (error) {
+    console.error('Error in get-watchlist-symbols:', error);
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+});
+
+ipcMain.handle('delete-watchlist', async (_event, data) => {
+  try {
+    const { name } = data || {};
+    if (!name) throw new Error('name is required');
+    const result = await pythonService.sendToPython('delete-watchlist', { name }) as any;
+    if (result.error) throw new Error(result.error);
+    return result;
+  } catch (error) {
+    console.error('Error in delete-watchlist:', error);
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+});
+
+// Parse DSL to scannerSpec
+ipcMain.handle('parse-dsl', async (_event, data) => {
+  try {
+    const { dsl, timeframe, universe } = data || {};
+    const result = await pythonService.sendToPython('parse-dsl', { dsl, timeframe, universe }) as any;
+    if (result.error) throw new Error(result.error);
+    return result;
+  } catch (error) {
+    console.error('Error in parse-dsl:', error);
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+});
