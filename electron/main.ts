@@ -28,10 +28,11 @@ class PythonService {
          const response = JSON.parse(output);
 
          // Handle progress events and forward to renderer
-         if (response.type === 'import-progress' || response.type === 'import-summary') {
+         if (response.type === 'import-progress' || response.type === 'import-summary' || response.type === 'scan-progress') {
            console.log('IMPORT-PROGRESS:', response);
            if (mainWindow && !mainWindow.isDestroyed()) {
-             mainWindow.webContents.send('import-progress', response);
+             const channel = response.type === 'scan-progress' ? 'scan-progress' : 'import-progress';
+             mainWindow.webContents.send(channel, response);
            }
            // Also resolve the request if it's a final summary
            if (response.type === 'import-summary') {
@@ -106,9 +107,11 @@ class PythonService {
       };
 
       // Set a timeout for the request
+      const longTimeoutActions = new Set(['import-data', 'run-scan']);
+      const actionTimeoutMs = longTimeoutActions.has(action) ? 300000 : 60000; // 5 min for heavy actions
       const timeout = setTimeout(() => {
         this.pendingRequests.delete(requestId);
-        if (action === 'import-data') {
+        if (longTimeoutActions.has(action)) {
           console.error(`Python request timeout for action: ${action}, requestId: ${requestId}`);
           console.error(`Request details:`, request);
           console.error(`Python process alive: ${this.pythonProcess ? 'yes' : 'no'}`);
@@ -119,13 +122,15 @@ class PythonService {
           console.error(`Process stderr readable: ${this.pythonProcess.stderr?.readable}`);
         }
         reject(new Error(`Python request timeout for action: ${action}`));
-      }, action === 'import-data' ? 300000 : 60000); // 5 minutes for import, 60 seconds for others
+      }, actionTimeoutMs); // 5 minutes for heavy actions, 60 seconds for others
 
       // Store the resolve function with timeout cleanup
       this.pendingRequests.set(requestId, (response: any) => {
         clearTimeout(timeout);
         if (action === 'import-data') {
           console.log(`IMPORT-RESPONSE: Received response for import-data request ${requestId}`);
+        } else if (action === 'run-scan') {
+          console.log(`SCAN-RESPONSE: Received response for run-scan request ${requestId}`);
         }
         resolve(response);
       });
@@ -138,6 +143,8 @@ class PythonService {
           stdoutReadable: this.pythonProcess.stdout?.readable,
           stderrReadable: this.pythonProcess.stderr?.readable
         });
+      } else if (action === 'run-scan') {
+        console.log('SCAN-DEBUG: Sending run-scan to Python:', { requestId, hasOptions: !!data?.options, hasSpec: !!data?.scannerSpec });
       }
       this.pythonProcess.stdin.write(JSON.stringify(request) + '\n');
       if (action === 'import-data') {
@@ -147,6 +154,8 @@ class PythonService {
           stdoutReadable: this.pythonProcess.stdout?.readable,
           stderrReadable: this.pythonProcess.stderr?.readable
         });
+      } else if (action === 'run-scan') {
+        console.log(`SCAN-DEBUG: Sent to Python, pending requests count: ${this.pendingRequests.size}`);
       }
     });
   }

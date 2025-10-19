@@ -9,7 +9,9 @@ import sys
 import json
 import time
 from pathlib import Path
+import pytest
 
+@pytest.mark.timeout(60)
 def test_error_handling():
     """Test error handling with problematic data"""
     print("🚀 Testing error handling with problematic data...")
@@ -56,57 +58,59 @@ def test_error_handling():
     process.stdin.flush()
 
     # Monitor for errors and completion
-    import_completed = False
-    errors_found = []
-    rows_imported = 0
-    rows_skipped = 0
+    # Use communicate with timeout to avoid blocking
+    try:
+        stdout_data, stderr_data = process.communicate(timeout=30)
+        
+        # Parse all JSON responses from stdout
+        import_completed = False
+        errors_found = []
+        rows_imported = 0
+        rows_skipped = 0
+        
+        for line in stdout_data.splitlines():
+            if not line.strip():
+                continue
+            try:
+                response = json.loads(line.strip())
+                
+                if response.get('type') == 'import-progress':
+                    progress_errors = response.get('errors', [])
+                    if progress_errors:
+                        errors_found.extend(progress_errors)
+                        print(f"⚠️  Found errors: {progress_errors}")
+                
+                elif response.get('type') == 'import-summary':
+                    import_completed = True
+                    rows_imported = response.get('rowsImported', 0)
+                    rows_skipped = response.get('rowsSkipped', 0)
+                    
+                    print("✅ Import completed with errors!")
+                    print(f"   📈 Rows imported: {rows_imported:,}")
+                    print(f"   ⏭️  Rows skipped: {rows_skipped:,}")
+                    
+                    # Check that we have both imported and skipped rows (partial success)
+                    if rows_imported > 0 and rows_skipped > 0:
+                        print(f"✅ Partial import successful: {rows_imported:,} good rows imported, {rows_skipped:,} bad rows skipped")
+                    elif rows_imported > 0:
+                        print(f"⚠️  All rows imported despite errors in file")
+                    else:
+                        print("❌ No rows imported - error handling may be too strict")
+                        return False
+            except json.JSONDecodeError:
+                # Skip non-JSON lines
+                continue
+        
+        if stderr_data:
+            print(f"Backend stderr: {stderr_data[:500]}")  # Print first 500 chars
+                    
+    except subprocess.TimeoutExpired:
+        print("❌ Test timeout after 30 seconds")
+        process.kill()
+        process.wait()
+        return False
 
-    while True:
-        if process.poll() is not None:
-            print("❌ Backend process terminated unexpectedly")
-            break
-
-        line = process.stdout.readline()
-        if not line:
-            break
-
-        try:
-            response = json.loads(line.strip())
-
-            if response.get('type') == 'import-progress':
-                progress_errors = response.get('errors', [])
-                if progress_errors:
-                    errors_found.extend(progress_errors)
-                    print(f"⚠️  Found errors: {progress_errors}")
-
-            elif response.get('type') == 'import-summary':
-                import_completed = True
-                rows_imported = response.get('rowsImported', 0)
-                rows_skipped = response.get('rowsSkipped', 0)
-
-                print("✅ Import completed with errors!")
-                print(f"   📈 Rows imported: {rows_imported:,}")
-                print(f"   ⏭️  Rows skipped: {rows_skipped:,}")
-
-                # Check that we have both imported and skipped rows (partial success)
-                if rows_imported > 0 and rows_skipped > 0:
-                    print(f"✅ Partial import successful: {rows_imported:,} good rows imported, {rows_skipped:,} bad rows skipped")
-                elif rows_imported > 0:
-                    print(f"⚠️  All rows imported despite errors in file")
-                else:
-                    print("❌ No rows imported - error handling may be too strict")
-                    return False
-
-                break
-
-        except json.JSONDecodeError:
-            # Skip non-JSON lines
-            continue
-
-    # Clean up
-    process.terminate()
-    process.wait(timeout=5)
-
+    # Process already completed via communicate(), check results
     if import_completed:
         print("🎉 Error handling test passed!")
         print(f"📋 Total errors found: {len(errors_found)}")

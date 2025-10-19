@@ -42,7 +42,7 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    strictPort: true,
+    strictPort: false,
   },
   // Ensure proper handling of Electron environment
   define: {

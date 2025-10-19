@@ -8,10 +8,13 @@ import os
 import sqlite3
 import time
 import datetime
+from typing import Any
 from pathlib import Path
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 
 class DatabaseService:
     """SQLite database service for trading data with separate user and market databases"""
@@ -1476,12 +1479,13 @@ def handle_request(request, db_service_override=None):
                     progress_reporter.report_summary(error_summary)
                 return error_summary
         elif request.get('action') == 'run-scan':
-            # Phase 1: Basic scanner execution on latest daily bar
+            # Phase 1-4: Scanner execution with multi-timeframe support, memoization, and explain values
             t0 = time.time()
             try:
                 data = request.get('data', {}) or {}
                 scanner_spec = data.get('scannerSpec') or data.get('spec') or {}
                 options = data.get('options') or {}
+                print(f"SCAN: start requestId={request_id}, timeframe={scanner_spec.get('timeframe')}, includeExplain={options.get('includeExplain', False)}", file=sys.stderr)
 
                 if not isinstance(scanner_spec, dict):
                     return {
@@ -1490,15 +1494,85 @@ def handle_request(request, db_service_override=None):
                     }
 
                 timeframe = str(scanner_spec.get('timeframe', '1D')).upper()
-                if timeframe != '1D':
+                # Phase 3: Support multiple timeframes (1D, 5M, 15M, 1H)
+                supported_timeframes = ['1D', '5M', '15M', '1H', '1HOUR']
+                if timeframe not in supported_timeframes:
                     return {
-                        'error': f"Unsupported timeframe '{timeframe}' in Phase 1 (only '1D' supported)",
+                        'error': f"Unsupported timeframe '{timeframe}'. Supported: {', '.join(supported_timeframes)}",
                         'requestId': request_id
                     }
+                
+                # Normalize 1HOUR to 1H
+                if timeframe == '1HOUR':
+                    timeframe = '1H'
 
                 universe = scanner_spec.get('universe', 'ALL')
                 # Determine symbols
                 symbols_list = []
+                
+                # Phase 4: Helper function to fetch OHLCV data for a symbol and timeframe
+                def fetch_ohlcv_data(symbol: str, tf: str, conn_override=None) -> pd.DataFrame:
+                    """Fetch OHLCV data from database for the specified symbol and timeframe
+                    
+                    Args:
+                        symbol: Symbol to fetch
+                        tf: Timeframe (1D, 1h, 15m, 5m)
+                        conn_override: Optional sqlite3 connection (for parallel execution)
+                    """
+                    def _fetch_with_conn(conn):
+                        if tf == '1D':
+                            # Daily data from price_data table
+                            where = "symbol = ?"
+                            params: list = [symbol]
+                            if options.get('dateFrom'):
+                                where += " AND timestamp >= ?"
+                                # assume dateFrom is YYYY-MM-DD
+                                dt = int(time.mktime(datetime.datetime.strptime(options['dateFrom'], '%Y-%m-%d').timetuple()))
+                                params.append(dt)
+                            if options.get('dateTo'):
+                                where += " AND timestamp <= ?"
+                                dt = int(time.mktime(datetime.datetime.strptime(options['dateTo'], '%Y-%m-%d').timetuple())) + 86399
+                                params.append(dt)
+                            cursor = conn.execute(
+                                f"SELECT timestamp, open, high, low, close, volume FROM price_data WHERE {where} ORDER BY timestamp ASC",
+                                tuple(params)
+                            )
+                            rows = cursor.fetchall()
+                            if not rows:
+                                return pd.DataFrame()
+                            df = pd.DataFrame(rows, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                            df = df.set_index(pd.to_datetime(df['timestamp'], unit='s'))
+                            return df
+                        else:
+                            # Intraday data from ohlcv_intraday table
+                            where = "symbol = ? AND timeframe = ?"
+                            params: list = [symbol, tf]
+                            if options.get('dateFrom'):
+                                where += " AND timestamp >= ?"
+                                dt = int(time.mktime(datetime.datetime.strptime(options['dateFrom'], '%Y-%m-%d').timetuple()))
+                                params.append(dt)
+                            if options.get('dateTo'):
+                                where += " AND timestamp <= ?"
+                                dt = int(time.mktime(datetime.datetime.strptime(options['dateTo'], '%Y-%m-%d').timetuple())) + 86399
+                                params.append(dt)
+                            cursor = conn.execute(
+                                f"SELECT timestamp, open, high, low, close, volume FROM ohlcv_intraday WHERE {where} ORDER BY timestamp ASC",
+                                tuple(params)
+                            )
+                            rows = cursor.fetchall()
+                            if not rows:
+                                # No intraday data available - could resample from daily if needed
+                                return pd.DataFrame()
+                            df = pd.DataFrame(rows, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                            df = df.set_index(pd.to_datetime(df['timestamp'], unit='s'))
+                            return df
+                    
+                    if conn_override:
+                        return _fetch_with_conn(conn_override)
+                    else:
+                        with sqlite3.connect(current_db_service.market_db_path) as conn:
+                            return _fetch_with_conn(conn)
+                
                 with sqlite3.connect(current_db_service.market_db_path) as conn:
                     if isinstance(universe, list) and len(universe) > 0:
                         # Validate existence
@@ -1507,6 +1581,7 @@ def handle_request(request, db_service_override=None):
                     else:
                         cursor = conn.execute("SELECT DISTINCT symbol FROM price_data ORDER BY symbol")
                     symbols_list = [row[0] for row in cursor.fetchall()]
+                print(f"SCAN: symbols to scan={len(symbols_list)}", file=sys.stderr)
 
                 filters = scanner_spec.get('filters', []) or []
                 # If this is a skeleton scan request (no filters) and caller requested latestOnly,
@@ -1521,8 +1596,95 @@ def handle_request(request, db_service_override=None):
                         },
                         'requestId': request_id
                     }
+                # If there are no symbols to scan, return early
+                if not symbols_list:
+                    return {
+                        'results': [],
+                        'stats': {
+                            'scannedSymbols': 0,
+                            'timeMs': int((time.time() - t0) * 1000)
+                        },
+                        'requestId': request_id
+                    }
                 if not isinstance(filters, list):
                     return { 'error': 'filters must be an array', 'requestId': request_id }
+
+                # Apply maxSymbols cap if provided in options (development convenience)
+                max_symbols = 0
+                try:
+                    max_symbols = int(options.get('maxSymbols', 0) or 0)
+                except Exception:
+                    max_symbols = 0
+                if max_symbols > 0 and len(symbols_list) > max_symbols:
+                    symbols_list = symbols_list[:max_symbols]
+
+                # Emit initial scan-progress event
+                try:
+                    print(json.dumps({
+                        'type': 'scan-progress',
+                        'requestId': request_id,
+                        'phase': 'start',
+                        'totalSymbols': len(symbols_list)
+                    }), flush=True)
+                except Exception:
+                    pass
+
+                # Phase 4: Memoization cache for computed indicators per symbol
+                # Key: (symbol, indicator_signature) -> pd.Series
+                indicator_cache = {}
+                
+                def get_cache_key(sym: str, indicator_sig: str) -> str:
+                    return f"{sym}:{indicator_sig}"
+                
+                def describe_measure(node) -> str:
+                    """Generate a human-readable description of a measure node for explain values"""
+                    if not isinstance(node, dict):
+                        return "unknown"
+                    ntype = node.get('type')
+                    if ntype == 'const':
+                        return str(node.get('value', 0))
+                    if ntype == 'expr':
+                        parts = []
+                        for token in node.get('expr', []):
+                            if isinstance(token, str):
+                                parts.append(token)
+                            else:
+                                parts.append(describe_measure(token))
+                        inner = ' '.join(parts).strip()
+                        return f"({inner})" if inner else "(expr)"
+                    if ntype == 'attr':
+                        name = node.get('name', '')
+                        offset = node.get('offset')
+                        if offset and offset.get('kind') == 'lookback':
+                            return f"{name}[-{offset.get('bars')}]"
+                        elif offset and offset.get('kind') == 'ordinal':
+                            return f"{name}[={offset.get('n')}]"
+                        return name
+                    if ntype == 'indicator':
+                        iname = node.get('name', '')
+                        params = node.get('params', {})
+                        if iname == 'SMA':
+                            return f"SMA({params.get('period', 20)})"
+                        if iname == 'EMA':
+                            return f"EMA({params.get('period', 20)})"
+                        if iname == 'RSI':
+                            return f"RSI({params.get('period', 14)})"
+                        if iname == 'MACD':
+                            return f"MACD({params.get('fast', 12)},{params.get('slow', 26)},{params.get('signal', 9)})"
+                        if iname == 'ATR':
+                            return f"ATR({params.get('period', 14)})"
+                        if iname in ('BB_UPPER', 'BB_MIDDLE', 'BB_LOWER'):
+                            return f"{iname}({params.get('period', 20)})"
+                        if iname == 'ADX':
+                            return f"ADX({params.get('period', 14)})"
+                        if iname == 'VWAP':
+                            return "VWAP"
+                        return iname
+                    if ntype == 'func':
+                        fname = node.get('name', '')
+                        period = node.get('period', 0)
+                        return f"{fname}({period})"
+                    return "measure"
 
                 # Helper: evaluate filters for one symbol using pandas Series
                 def rsi(series: pd.Series, period: int = 14) -> pd.Series:
@@ -1593,143 +1755,275 @@ def handle_request(request, db_service_override=None):
                     cum_vol = vol.cumsum().replace(0, np.nan)
                     return (tp * vol).cumsum() / cum_vol
 
-                def eval_measure(node, df: pd.DataFrame) -> pd.Series:
+                def eval_measure(node, df: pd.DataFrame, symbol: str = '', current_timeframe: str = '') -> pd.Series:
+                    """Evaluate a measure node and return a pandas Series. Uses indicator_cache for memoization.
+                    
+                    Phase 3: Supports cross-timeframe queries - if node has 'timeframe' property different
+                    from main_timeframe, fetches data for that timeframe and aligns it.
+                    """
                     if node is None:
                         return pd.Series(dtype=float, index=df.index)
                     if not isinstance(node, dict):
                         return pd.Series(np.nan, index=df.index)
+                    
                     ntype = node.get('type')
                     offset = node.get('offset')
+                    node_timeframe = node.get('timeframe', current_timeframe)
+                    active_df = df
+                    active_tf = current_timeframe
+                    
+                    # Phase 3: If this node specifies a different timeframe, fetch that data
+                    if symbol and node_timeframe and node_timeframe != current_timeframe:
+                        cross_tf_df = fetch_ohlcv_data(symbol, node_timeframe)
+                        if not cross_tf_df.empty:
+                            active_df = cross_tf_df
+                            active_tf = node_timeframe
+                        else:
+                            active_tf = node_timeframe or current_timeframe
+                    else:
+                        active_tf = node_timeframe or current_timeframe
+                    
+                    index_ref = active_df.index if not active_df.empty else df.index
                     def apply_offset(series: pd.Series) -> pd.Series:
-                        if isinstance(offset, dict) and offset.get('kind') == 'lookback':
-                            bars = int(offset.get('bars', 0))
-                            if bars > 0:
-                                return series.shift(bars)
+                        if isinstance(offset, dict):
+                            kind = offset.get('kind')
+                            if kind == 'lookback':
+                                bars = int(offset.get('bars', 0))
+                                if bars > 0:
+                                    return series.shift(bars)
+                            elif kind == 'ordinal':
+                                # Phase 3: ordinal offset [=k] - access k-th bar from series start
+                                n = int(offset.get('n', 0))
+                                if 0 <= n < len(series):
+                                    # Return a series with the value at position n for all indices
+                                    return pd.Series(series.iloc[n], index=series.index)
+                                else:
+                                    # Out of bounds - return NaN
+                                    return pd.Series(np.nan, index=series.index)
                         return series
 
                     if ntype == 'const':
                         val = float(node.get('value', 0))
-                        return pd.Series(val, index=df.index)
+                        if index_ref.empty:
+                            return pd.Series(dtype=float, index=index_ref)
+                        return pd.Series(val, index=index_ref)
                     if ntype == 'attr':
                         name = node.get('name', '').lower()
                         mapping = {
                             'open': 'open', 'high': 'high', 'low': 'low', 'close': 'close', 'volume': 'volume'
                         }
                         if name not in mapping:
-                            return pd.Series(np.nan, index=df.index)
-                        return apply_offset(df[mapping[name]].astype(float))
+                            return pd.Series(np.nan, index=index_ref)
+                        column_name = mapping[name]
+                        if column_name not in active_df.columns:
+                            return pd.Series(np.nan, index=index_ref)
+                        return apply_offset(active_df[column_name].astype(float))
                     if ntype == 'func':
                         fname = node.get('name', '').upper()
                         period = int(node.get('period', 14))
-                        inner = eval_measure(node.get('measure'), df)
+                        inner = eval_measure(node.get('measure'), active_df, symbol, active_tf)
                         if fname == 'MAX':
                             return inner.rolling(window=period, min_periods=period).max()
                         if fname == 'MIN':
                             return inner.rolling(window=period, min_periods=period).min()
-                        return pd.Series(np.nan, index=df.index)
+                        return pd.Series(np.nan, index=index_ref)
+                    if ntype == 'expr':
+                        tokens = node.get('expr', []) or []
+                        if not tokens:
+                            return pd.Series(np.nan, index=index_ref)
+                        resolved: list[Any] = []
+                        for token in tokens:
+                            if isinstance(token, str):
+                                resolved.append(token)
+                            else:
+                                resolved.append(eval_measure(token, active_df, symbol, active_tf))
+                        if not resolved or isinstance(resolved[0], str):
+                            return pd.Series(np.nan, index=index_ref)
+                        result_series = resolved[0]
+                        if isinstance(result_series, pd.Series):
+                            result_series = result_series.reindex(index_ref)
+                        else:
+                            result_series = pd.Series(result_series, index=index_ref)
+                        idx = 1
+                        while idx < len(resolved):
+                            op_token = resolved[idx]
+                            rhs_token = resolved[idx + 1] if idx + 1 < len(resolved) else None
+                            if isinstance(rhs_token, pd.Series):
+                                rhs_series = rhs_token.reindex(result_series.index)
+                            else:
+                                rhs_series = pd.Series(rhs_token, index=result_series.index)
+                            if op_token == '+':
+                                result_series = result_series + rhs_series
+                            elif op_token == '-':
+                                result_series = result_series - rhs_series
+                            elif op_token == '*':
+                                result_series = result_series * rhs_series
+                            elif op_token == '/':
+                                rhs_safe = rhs_series.replace(0, np.nan)
+                                result_series = result_series / rhs_safe
+                            idx += 2
+                        return apply_offset(result_series)
                     if ntype == 'indicator':
                         iname = node.get('name', '').upper()
                         params = node.get('params', {}) or {}
+                        cache_scope = (node_timeframe or active_tf or current_timeframe or 'default')
+                        # Phase 4: Check cache before computing
+                        cache_sig = f"{cache_scope}:{iname}:{json.dumps(params, sort_keys=True)}"
+                        cache_key = get_cache_key(symbol, cache_sig)
+                        if cache_key in indicator_cache:
+                            return apply_offset(indicator_cache[cache_key])
+                        
+                        result_series = None
                         if iname == 'SMA':
-                            src = eval_measure(params.get('src') or {'type': 'attr', 'name': 'close'}, df)
+                            src = eval_measure(params.get('src') or {'type': 'attr', 'name': 'close'}, active_df, symbol, active_tf)
                             per = int(params.get('period', 20))
-                            return apply_offset(sma(src, per))
-                        if iname == 'EMA':
-                            src = eval_measure(params.get('src') or {'type': 'attr', 'name': 'close'}, df)
+                            result_series = sma(src, per)
+                        elif iname == 'EMA':
+                            src = eval_measure(params.get('src') or {'type': 'attr', 'name': 'close'}, active_df, symbol, active_tf)
                             per = int(params.get('period', 20))
-                            return apply_offset(ema(src, per))
-                        if iname == 'RSI':
-                            src = eval_measure(params.get('src') or {'type': 'attr', 'name': 'close'}, df)
+                            result_series = ema(src, per)
+                        elif iname == 'RSI':
+                            src = eval_measure(params.get('src') or {'type': 'attr', 'name': 'close'}, active_df, symbol, active_tf)
                             per = int(params.get('period', 14))
-                            return apply_offset(rsi(src, per))
-                        if iname == 'MACD':
-                            src = eval_measure(params.get('src') or {'type': 'attr', 'name': 'close'}, df)
+                            result_series = rsi(src, per)
+                        elif iname == 'MACD':
+                            src = eval_measure(params.get('src') or {'type': 'attr', 'name': 'close'}, active_df, symbol, active_tf)
                             fast = int(params.get('fast', 12))
                             slow = int(params.get('slow', 26))
                             signal_p = int(params.get('signal', 9))
                             out = str(params.get('output', 'line')).lower()
                             line, sig, hist = macd(src, fast, slow, signal_p)
                             out_map = {'line': line, 'signal': sig, 'hist': hist}
-                            return apply_offset(out_map.get(out, line))
-                        if iname == 'ATR':
+                            result_series = out_map.get(out, line)
+                        elif iname == 'ATR':
                             per = int(params.get('period', 14))
-                            return apply_offset(atr(df['high'], df['low'], df['close'], per))
-                        if iname in ('BB', 'BOLLINGER', 'BBANDS', 'BB_MIDDLE', 'BB_UPPER', 'BB_LOWER'):
-                            src = eval_measure(params.get('src') or {'type': 'attr', 'name': 'close'}, df)
+                            result_series = atr(active_df['high'], active_df['low'], active_df['close'], per)
+                        elif iname in ('BB', 'BOLLINGER', 'BBANDS', 'BB_MIDDLE', 'BB_UPPER', 'BB_LOWER'):
+                            src = eval_measure(params.get('src') or {'type': 'attr', 'name': 'close'}, active_df, symbol, active_tf)
                             per = int(params.get('period', 20))
                             mult = float(params.get('std', 2))
                             mid, up, low_b = bollinger(src, per, mult)
-                            name_norm = iname
                             if iname == 'BB_MIDDLE':
-                                return apply_offset(mid)
-                            if iname == 'BB_UPPER':
-                                return apply_offset(up)
-                            if iname == 'BB_LOWER':
-                                return apply_offset(low_b)
-                            # default return middle band
-                            return apply_offset(mid)
-                        if iname == 'ADX':
+                                result_series = mid
+                            elif iname == 'BB_UPPER':
+                                result_series = up
+                            elif iname == 'BB_LOWER':
+                                result_series = low_b
+                            else:
+                                result_series = mid  # default
+                        elif iname == 'ADX':
                             per = int(params.get('period', 14))
-                            return apply_offset(adx(df['high'], df['low'], df['close'], per))
-                        if iname == 'VWAP':
+                            result_series = adx(active_df['high'], active_df['low'], active_df['close'], per)
+                        elif iname == 'VWAP':
                             # Approximate cumulative VWAP in daily data
-                            return apply_offset(vwap_cumulative(df['high'], df['low'], df['close'], df['volume']))
+                            volume_series = active_df['volume'] if 'volume' in active_df.columns else pd.Series(0, index=index_ref)
+                            result_series = vwap_cumulative(active_df['high'], active_df['low'], active_df['close'], volume_series)
+                        
+                        if result_series is not None:
+                            # Cache the computed indicator
+                            indicator_cache[cache_key] = result_series
+                            return apply_offset(result_series)
+                        
                         # Unknown indicator
-                        return pd.Series(np.nan, index=df.index)
+                        return pd.Series(np.nan, index=index_ref)
                     # Unknown node type
-                    return pd.Series(np.nan, index=df.index)
+                    return pd.Series(np.nan, index=index_ref)
 
-                def eval_filter(node, df: pd.DataFrame) -> bool:
+                def eval_filter(node, df: pd.DataFrame, symbol: str = '', explain_values: dict | None = None, main_timeframe: str = '1D') -> bool:
+                    """Evaluate a filter node and optionally collect explain values for debugging/UI tooltips"""
                     if not isinstance(node, dict):
                         return False
                     op = node.get('op')
-                    if op == 'group':
+                    if op in ('group', 'logical'):
                         logic = node.get('logic', 'AND').upper()
                         children = node.get('children', []) or []
-                        vals = [eval_filter(ch, df) for ch in children]
+                        vals = [eval_filter(ch, df, symbol, explain_values, main_timeframe) for ch in children]
                         return all(vals) if logic == 'AND' else any(vals)
                     if op == 'not':
-                        return not eval_filter(node.get('child'), df)
+                        return not eval_filter(node.get('child'), df, symbol, explain_values, main_timeframe)
                     if op == 'compare':
                         cmp_op = node.get('cmp')
-                        left = eval_measure(node.get('left'), df)
-                        right = eval_measure(node.get('right'), df)
+                        left = eval_measure(node.get('left'), df, symbol, main_timeframe)
+                        right = eval_measure(node.get('right'), df, symbol, main_timeframe)
                         lv = float(left.iloc[-1]) if len(left) else np.nan
                         rv = float(right.iloc[-1]) if len(right) else np.nan
+                        
+                        # Phase 4: Collect explain values
+                        if explain_values is not None and not np.isnan(lv) and not np.isnan(rv):
+                            left_desc = describe_measure(node.get('left'))
+                            right_desc = describe_measure(node.get('right'))
+                            explain_values[f"{left_desc}_{cmp_op}_{right_desc}"] = {
+                                'left': round(lv, 4),
+                                'right': round(rv, 4),
+                                'operator': cmp_op,
+                                'result': None  # Will be set below
+                            }
+                        
                         if np.isnan(lv) or np.isnan(rv):
+                            if explain_values is not None:
+                                left_desc = describe_measure(node.get('left'))
+                                right_desc = describe_measure(node.get('right'))
+                                key = f"{left_desc}_{cmp_op}_{right_desc}"
+                                if key in explain_values:
+                                    explain_values[key]['result'] = False
                             return False
+                        
+                        result = False
                         if cmp_op == '>':
-                            return lv > rv
-                        if cmp_op == '>=':
-                            return lv >= rv
-                        if cmp_op == '<':
-                            return lv < rv
-                        if cmp_op == '<=':
-                            return lv <= rv
-                        if cmp_op == '==':
-                            return abs(lv - rv) <= 1e-8
-                        if cmp_op == '!=':
-                            return abs(lv - rv) > 1e-8
-                        return False
+                            result = lv > rv
+                        elif cmp_op == '>=':
+                            result = lv >= rv
+                        elif cmp_op == '<':
+                            result = lv < rv
+                        elif cmp_op == '<=':
+                            result = lv <= rv
+                        elif cmp_op == '==':
+                            result = abs(lv - rv) <= 1e-8
+                        elif cmp_op == '!=':
+                            result = abs(lv - rv) > 1e-8
+                        
+                        # Update result in explain values
+                        if explain_values is not None:
+                            left_desc = describe_measure(node.get('left'))
+                            right_desc = describe_measure(node.get('right'))
+                            key = f"{left_desc}_{cmp_op}_{right_desc}"
+                            if key in explain_values:
+                                explain_values[key]['result'] = result
+                        
+                        return result
                     if op == 'crossover':
                         # Phase1: relaxed crossover detection — consider a match when
                         # the left measure is currently above the right (CROSSES_ABOVE)
                         # or currently below (CROSSES_BELOW). This avoids missing
                         # cases where the previous value may be NaN due to indicator warmup.
                         cross_type = node.get('type', 'CROSSES_ABOVE').upper()
-                        left = eval_measure(node.get('left'), df)
-                        right = eval_measure(node.get('right'), df)
+                        left = eval_measure(node.get('left'), df, symbol, main_timeframe)
+                        right = eval_measure(node.get('right'), df, symbol, main_timeframe)
                         if len(left) < 1 or len(right) < 1:
                             return False
                         l_curr = left.iloc[-1]
                         r_curr = right.iloc[-1]
                         if np.isnan(l_curr) or np.isnan(r_curr):
                             return False
+                        
+                        result = False
                         if cross_type == 'CROSSES_ABOVE':
-                            return l_curr > r_curr
-                        if cross_type == 'CROSSES_BELOW':
-                            return l_curr < r_curr
-                        return False
+                            result = l_curr > r_curr
+                        elif cross_type == 'CROSSES_BELOW':
+                            result = l_curr < r_curr
+                        
+                        # Phase 4: Collect explain values for crossovers
+                        if explain_values is not None:
+                            left_desc = describe_measure(node.get('left'))
+                            right_desc = describe_measure(node.get('right'))
+                            explain_values[f"{left_desc}_{cross_type}_{right_desc}"] = {
+                                'left': round(l_curr, 4),
+                                'right': round(r_curr, 4),
+                                'type': cross_type,
+                                'result': result
+                            }
+                        
+                        return result
                     if op == 'arith':
                         # Optional basic arithmetic chain; evaluate last value
                         expr = node.get('expr', [])
@@ -1739,7 +2033,7 @@ def handle_request(request, db_service_override=None):
                         vals = []
                         for token in expr:
                             if isinstance(token, dict):
-                                series = eval_measure(token, df)
+                                series = eval_measure(token, df, symbol, main_timeframe)
                                 vals.append(float(series.iloc[-1]) if len(series) else np.nan)
                             else:
                                 vals.append(token)
@@ -1762,40 +2056,217 @@ def handle_request(request, db_service_override=None):
                     # Unknown op
                     return False
 
+                # Phase 4: Helper function to process a single symbol (for parallel execution)
+                def process_symbol(sym: str, db_path: str, include_explain: bool):
+                    """Process a single symbol and return result if matched, else None"""
+                    try:
+                        # Create a new connection for this thread
+                        with sqlite3.connect(db_path) as conn:
+                            # Fetch OHLCV data for the symbol
+                            df = fetch_ohlcv_data(sym, timeframe, conn_override=conn)
+                            if df.empty:
+                                return None
+                            
+                            # Collect explain values for this symbol
+                            explain_vals = {} if include_explain else None
+                            
+                            # Evaluate all filters; top-level 'filters' is AND of entries
+                            match_all = True
+                            for fnode in filters:
+                                if not eval_filter(fnode, df, sym, explain_vals, timeframe):
+                                    match_all = False
+                                    break
+                            
+                            if match_all:
+                                result_entry = {
+                                    'symbol': sym,
+                                    'timestamp': int(pd.Timestamp(df.index[-1]).timestamp())
+                                }
+                                if explain_vals:
+                                    result_entry['values'] = explain_vals
+                                return result_entry
+                            return None
+                    except Exception as e:
+                        print(f"Error processing symbol {sym}: {e}", file=sys.stderr)
+                        return None
+
                 results = []
                 scanned = 0
-                with sqlite3.connect(current_db_service.market_db_path) as conn:
+                symbol_timings: list[tuple[str, int]] = []
+                last_progress_ts = time.time()
+                
+                # Phase 4: Parallel processing with ThreadPoolExecutor
+                # Determine optimal number of workers (max 8 to avoid overwhelming the database)
+                max_workers = min(6, max(2, (os.cpu_count() or 4)))
+                use_parallel = len(symbols_list) > 10  # Only parallelize for >10 symbols
+                
+                if use_parallel:
+                    # Parallel execution
+                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                        # Submit all tasks
+                        db_path_str = str(current_db_service.market_db_path)
+                        def _task(sym):
+                            t_sym = time.time()
+                            res = process_symbol(sym, db_path_str, options.get('includeExplain', False))
+                            elapsed_ms = int((time.time() - t_sym) * 1000)
+                            return sym, res, elapsed_ms
+
+                        future_to_symbol = {
+                            executor.submit(_task, sym): sym
+                            for sym in symbols_list
+                        }
+                        
+                        # Collect results as they complete
+                        for future in as_completed(future_to_symbol):
+                            scanned += 1
+                            sym, result, elapsed_ms = future.result()
+                            symbol_timings.append((sym, elapsed_ms))
+                            if result:
+                                # attach per-symbol timing when includeExplain is on
+                                if options.get('includeExplain', False):
+                                    result['timingMs'] = elapsed_ms
+                                # add alias for UI
+                                if 'values' in result and 'explain' not in result:
+                                    result['explain'] = result['values']
+                                results.append(result)
+                            # Throttle progress events
+                            now = time.time()
+                            if (now - last_progress_ts) >= 0.5 or (scanned % 50 == 0):
+                                try:
+                                    print(json.dumps({
+                                        'type': 'scan-progress',
+                                        'requestId': request_id,
+                                        'phase': 'running',
+                                        'scanned': scanned,
+                                        'totalSymbols': len(symbols_list)
+                                    }), flush=True)
+                                except Exception:
+                                    pass
+                                last_progress_ts = now
+                else:
+                    # Sequential execution for small lists
                     for sym in symbols_list:
                         scanned += 1
-                        cursor = conn.execute(
-                            "SELECT timestamp, open, high, low, close, volume FROM price_data WHERE symbol = ? ORDER BY timestamp ASC",
-                            (sym,)
-                        )
-                        rows = cursor.fetchall()
-                        if not rows:
+                        # Clear cache for new symbol to avoid memory issues with many symbols
+                        if scanned % 100 == 0:
+                            indicator_cache.clear()
+                        
+                        # Fetch OHLCV data for the symbol using the new helper function
+                        t_sym = time.time()
+                        df = fetch_ohlcv_data(sym, timeframe)
+                        if df.empty:
+                            # Record timing even if no data
+                            elapsed_ms = int((time.time() - t_sym) * 1000)
+                            symbol_timings.append((sym, elapsed_ms))
+                            # Emit progress periodically
+                            now = time.time()
+                            if (now - last_progress_ts) >= 0.5 or (scanned % 50 == 0):
+                                try:
+                                    print(json.dumps({
+                                        'type': 'scan-progress',
+                                        'requestId': request_id,
+                                        'phase': 'running',
+                                        'scanned': scanned,
+                                        'totalSymbols': len(symbols_list)
+                                    }), flush=True)
+                                except Exception:
+                                    pass
+                                last_progress_ts = now
                             continue
-                        df = pd.DataFrame(rows, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                        df = df.set_index(pd.to_datetime(df['timestamp'], unit='s'))
+                        
+                        # Phase 4: Collect explain values for this symbol
+                        explain_vals = {} if options.get('includeExplain', False) else None
+                        
                         # Evaluate all filters; top-level 'filters' is AND of entries
                         match_all = True
                         for fnode in filters:
-                            if not eval_filter(fnode, df):
+                            if not eval_filter(fnode, df, sym, explain_vals, timeframe):
                                 match_all = False
                                 break
+                        
+                        elapsed_ms = int((time.time() - t_sym) * 1000)
+                        symbol_timings.append((sym, elapsed_ms))
                         if match_all:
-                            results.append({
+                            result_entry = {
                                 'symbol': sym,
-                                'timestamp': int(df['timestamp'].iloc[-1])
-                            })
+                                'timestamp': int(pd.Timestamp(df.index[-1]).timestamp())
+                            }
+                            # Phase 4: Add explain values if requested
+                            if explain_vals:
+                                result_entry['values'] = explain_vals
+                                # Also add alias key 'explain' for UI compatibility
+                                result_entry['explain'] = explain_vals
+                            if options.get('includeExplain', False):
+                                result_entry['timingMs'] = elapsed_ms
+                            results.append(result_entry)
+                        # Emit progress periodically
+                        now = time.time()
+                        if (now - last_progress_ts) >= 0.5 or (scanned % 50 == 0):
+                            try:
+                                print(json.dumps({
+                                    'type': 'scan-progress',
+                                    'requestId': request_id,
+                                    'phase': 'running',
+                                    'scanned': scanned,
+                                    'totalSymbols': len(symbols_list)
+                                }), flush=True)
+                            except Exception:
+                                pass
+                            last_progress_ts = now
+                
+                # Phase 4: Add sorting and pagination support
+                # Support both nested and flat formats: {'sort': {'by': 'x', 'order': 'y'}} or {'sortBy': 'x', 'sortOrder': 'y'}
+                sort_config = options.get('sort', {})
+                sort_by = sort_config.get('by') if sort_config else options.get('sortBy', 'symbol')  # 'symbol' | 'timestamp'
+                sort_order = sort_config.get('order') if sort_config else options.get('sortOrder', 'asc')  # 'asc' | 'desc'
+                
+                if sort_by == 'symbol':
+                    results.sort(key=lambda r: r['symbol'], reverse=(sort_order == 'desc'))
+                elif sort_by == 'timestamp':
+                    results.sort(key=lambda r: r['timestamp'], reverse=(sort_order == 'desc'))
+                
+                # Apply pagination
+                offset = options.get('offset', 0)
+                limit = options.get('limit', 5000)
+                total_matches = len(results)
+                results = results[offset:offset + limit] if limit > 0 else results[offset:]
 
-                return {
+                # Prepare optional slowest symbols stats when includeExplain is enabled
+                extra_stats = {}
+                if options.get('includeExplain', False) and symbol_timings:
+                    try:
+                        sorted_timings = sorted(symbol_timings, key=lambda x: x[1], reverse=True)
+                        extra_stats['slowestSymbols'] = [
+                            {'symbol': s, 'timingMs': ms} for s, ms in sorted_timings[:10]
+                        ]
+                    except Exception:
+                        pass
+
+                resp = {
                     'results': results,
                     'stats': {
                         'scannedSymbols': scanned,
-                        'timeMs': int((time.time() - t0) * 1000)
+                        'totalMatches': total_matches,
+                        'returnedMatches': len(results),
+                        'timeMs': int((time.time() - t0) * 1000),
+                        **extra_stats
                     },
                     'requestId': request_id
                 }
+                # Emit done event
+                try:
+                    print(json.dumps({
+                        'type': 'scan-progress',
+                        'requestId': request_id,
+                        'phase': 'done',
+                        'scanned': scanned,
+                        'totalSymbols': len(symbols_list),
+                        'matches': total_matches
+                    }), flush=True)
+                except Exception:
+                    pass
+                print(f"SCAN: done requestId={request_id}, scanned={scanned}, matches={total_matches}, timeMs={resp['stats']['timeMs']}", file=sys.stderr)
+                return resp
             except Exception as e:
                 return {
                     'error': f'run-scan failed: {str(e)}',

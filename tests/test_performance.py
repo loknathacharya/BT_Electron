@@ -9,7 +9,9 @@ import sys
 import json
 import time
 from pathlib import Path
+import pytest
 
+@pytest.mark.timeout(120)
 def test_large_import_performance():
     """Test importing 100k rows meets performance requirements"""
     print("🚀 Testing large file import performance...")
@@ -60,15 +62,27 @@ def test_large_import_performance():
     # Monitor progress and measure total time
     import_completed = False
     last_progress = 0
+    
+    # Add timeout to prevent test from hanging
+    loop_start_time = time.time()
+    timeout_seconds = 90
 
     while True:
         if process.poll() is not None:
             print("❌ Backend process terminated unexpectedly")
             break
+        
+        # Check timeout
+        if time.time() - loop_start_time > timeout_seconds:
+            print(f"❌ Test timeout after {timeout_seconds} seconds")
+            process.terminate()
+            return False
 
         line = process.stdout.readline()
         if not line:
-            break
+            # No data available, short sleep to avoid busy-wait
+            time.sleep(0.1)
+            continue
 
         try:
             response = json.loads(line.strip())
