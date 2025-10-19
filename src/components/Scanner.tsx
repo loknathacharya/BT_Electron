@@ -1,4 +1,6 @@
 import React, { useMemo, useState } from 'react';
+import CandlestickChart from './CandlestickChart';
+import { useNavigate } from 'react-router-dom';
 
 type AttrName = 'open' | 'high' | 'low' | 'close' | 'volume';
 
@@ -123,6 +125,42 @@ const Scanner: React.FC = () => {
 
   const results = (result?.results || []) as Array<{ symbol: string; timestamp: number }>;
   const stats = result?.stats;
+
+  const navigate = useNavigate();
+
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewSymbol, setPreviewSymbol] = useState<string | null>(null);
+  const [previewData, setPreviewData] = useState<any[]>([]);
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  const openPreview = async (symbol: string) => {
+    setPreviewSymbol(symbol);
+    setPreviewOpen(true);
+    setPreviewLoading(true);
+    try {
+      const res = await window.electronAPI.invoke('get-price-data', { symbol, limit: 200, offset: 0 });
+      if (res.error) throw new Error(res.error);
+      const data = (res.data || []).slice(-50).map((d: any) => ({
+        name: d.date || new Date(d.timestamp * 1000).toLocaleDateString(),
+        open: Number(d.open),
+        high: Number(d.high),
+        low: Number(d.low),
+        close: Number(d.close),
+        volume: d.volume
+      }));
+      setPreviewData(data);
+    } catch (err: any) {
+      console.error('Preview fetch error', err);
+      setPreviewData([]);
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const viewInDataManagement = (symbol: string) => {
+    // Navigate to data management and pass symbol as query param
+    navigate(`/data-management?symbol=${encodeURIComponent(symbol)}`);
+  };
 
   return (
     <div style={{ padding: 20 }}>
@@ -408,12 +446,10 @@ const Scanner: React.FC = () => {
                     <td style={{ padding: '8px 10px', borderBottom: '1px solid #eee' }}>{r.symbol}</td>
                     <td style={{ padding: '8px 10px', borderBottom: '1px solid #eee' }}>{new Date(r.timestamp * 1000).toLocaleString()}</td>
                     <td style={{ padding: '8px 10px', borderBottom: '1px solid #eee' }}>
-                      <button
-                        className="btn btn-secondary"
-                        onClick={() => window.alert(`Open quick preview for ${r.symbol} (Data Management → select symbol and view chart).`)}
-                      >
-                        Quick Preview
-                      </button>
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <button className="btn btn-secondary" onClick={() => openPreview(r.symbol)}>Quick Preview</button>
+                        <button className="btn" onClick={() => viewInDataManagement(r.symbol)}>View in Data Management</button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -422,6 +458,35 @@ const Scanner: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Quick preview drawer */}
+      {previewOpen && (
+        <div style={{ position: 'fixed', right: 20, top: 80, width: 560, maxWidth: 'calc(100% - 40px)', background: '#fff', border: '1px solid #ddd', borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.12)', zIndex: 1200 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid #eee' }}>
+            <div>
+              <strong>Preview: {previewSymbol}</strong>
+              <div style={{ fontSize: 12, color: '#666' }}>Last 50 bars</div>
+            </div>
+            <div>
+              <button className="btn btn-secondary" onClick={() => setPreviewOpen(false)}>Close</button>
+            </div>
+          </div>
+          <div style={{ padding: 12 }}>
+            {previewLoading ? (
+              <div style={{ padding: 20 }}>Loading preview…</div>
+            ) : previewData.length === 0 ? (
+              <div style={{ padding: 20, color: '#666' }}>No preview data</div>
+            ) : (
+              <div style={{ height: 320 }}>
+                <CandlestickChart data={previewData} height={320} />
+              </div>
+            )}
+            <div style={{ marginTop: 8, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn" onClick={() => previewSymbol && viewInDataManagement(previewSymbol)}>Open in Data Management</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
