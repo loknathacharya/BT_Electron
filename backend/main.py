@@ -17,6 +17,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 import re
 
+# Ensure repository root is on sys.path so 'backend.*' absolute imports work when running this file directly
+try:
+    _this_file = Path(__file__).resolve()
+    _repo_root = _this_file.parent.parent  # .../BT_Electron
+    if str(_repo_root) not in sys.path:
+        sys.path.insert(0, str(_repo_root))
+except Exception:
+    # Non-fatal; fallback imports may still work when tests run from repo root
+    pass
+
 class DatabaseService:
     """SQLite database service for trading data with separate user and market databases"""
 
@@ -3338,6 +3348,215 @@ def handle_request(request, db_service_override=None):
                     'error': f'run-scan failed: {str(e)}',
                     'requestId': request_id
                 }
+        elif request.get('action') == 'run-backtest':
+            # Phase 5A: Signal generation via existing evaluator (reuse run-scan in backtest mode)
+            t0 = time.time()
+            try:
+                data = request.get('data', {}) or {}
+                print(f"BACKTEST: Received data keys: {list(data.keys())}", file=sys.stderr)
+
+                # Extract inputs (single symbol for Phase 5A)
+                symbol = (data.get('symbol') or '').strip()
+                if not symbol:
+                    return {'error': 'symbol is required', 'requestId': request_id}
+
+                # Allow timeframe override in payload, else derive from scanner_spec
+                scanner_spec_in = data.get('scanner_spec') or data.get('scannerSpec') or data.get('spec') or {}
+                if not isinstance(scanner_spec_in, dict):
+                    return {'error': 'scanner_spec must be an object', 'requestId': request_id}
+
+                timeframe = str(data.get('timeframe') or scanner_spec_in.get('timeframe') or '1D').upper()
+                supported_timeframes = ['1D', '5M', '15M', '1H', '1HOUR']
+                if timeframe not in supported_timeframes:
+                    return {
+                        'error': f"Unsupported timeframe '{timeframe}'. Supported: {', '.join(supported_timeframes)}",
+                        'requestId': request_id
+                    }
+                if timeframe == '1HOUR':
+                    timeframe = '1H'
+
+                # Date filters (optional)
+                start_date = data.get('start_date') or data.get('dateFrom')
+                end_date = data.get('end_date') or data.get('dateTo')
+
+                # Build a nested run-scan request in backtest mode, limited to the single symbol
+                nested_spec = dict(scanner_spec_in)
+                nested_spec['timeframe'] = timeframe
+                nested_spec['universe'] = [symbol]
+                nested_options = {
+                    'latestOnly': False,
+                    'mode': 'backtest',
+                }
+                if start_date:
+                    nested_options['dateFrom'] = start_date
+                if end_date:
+                    nested_options['dateTo'] = end_date
+
+                nested_req = {
+                    'action': 'run-scan',
+                    'data': {
+                        'scannerSpec': nested_spec,
+                        'options': nested_options
+                    },
+                    'requestId': f"{request_id}-scan"
+                }
+                print(f"BACKTEST: Invoking nested run-scan for symbol={symbol}, timeframe={timeframe}", file=sys.stderr)
+                scan_res = handle_request(nested_req, db_service_override=current_db_service)
+                if scan_res.get('error'):
+                    return {'error': f"run-scan failed inside run-backtest: {scan_res.get('error')}", 'requestId': request_id}
+
+                # Extract match timestamps for our symbol
+                raw_results = scan_res.get('results') or []
+                match_entry = None
+                for r in raw_results:
+                    if r.get('symbol') == symbol:
+                        match_entry = r
+                        break
+                match_ts = []
+                if match_entry:
+                    # backtest mode returns either {symbol, matches:[{timestamp}]} or similar
+                    if isinstance(match_entry.get('matches'), list):
+                        match_ts = [m.get('timestamp') for m in match_entry.get('matches') if isinstance(m, dict) and 'timestamp' in m]
+                    elif 'timestamp' in match_entry:
+                        match_ts = [match_entry.get('timestamp')]
+
+                # Fetch OHLCV for the symbol to annotate prices for the signals
+                def fetch_prices_for_symbol(sym: str, tf: str) -> pd.DataFrame:
+                    try:
+                        with sqlite3.connect(current_db_service.market_db_path) as conn:
+                            where = "symbol = ?"
+                            params: list = [sym]
+                            if tf == '1D':
+                                if start_date:
+                                    where += " AND timestamp >= ?"
+                                    dt = int(time.mktime(datetime.datetime.strptime(start_date, '%Y-%m-%d').timetuple()))
+                                    params.append(dt)
+                                if end_date:
+                                    where += " AND timestamp <= ?"
+                                    dt = int(time.mktime(datetime.datetime.strptime(end_date, '%Y-%m-%d').timetuple())) + 86399
+                                    params.append(dt)
+                                cap = 20000
+                                cursor = conn.execute(
+                                    f"SELECT timestamp, open, high, low, close, volume FROM price_data WHERE {where} ORDER BY timestamp ASC LIMIT ?",
+                                    tuple(params + [cap])
+                                )
+                                rows = cursor.fetchall()
+                            else:
+                                where = "symbol = ? AND timeframe = ?"
+                                params2: list = [sym, tf]
+                                if start_date:
+                                    where += " AND timestamp >= ?"
+                                    dt = int(time.mktime(datetime.datetime.strptime(start_date, '%Y-%m-%d').timetuple()))
+                                    params2.append(dt)
+                                if end_date:
+                                    where += " AND timestamp <= ?"
+                                    dt = int(time.mktime(datetime.datetime.strptime(end_date, '%Y-%m-%d').timetuple())) + 86399
+                                    params2.append(dt)
+                                cap = 50000
+                                cursor = conn.execute(
+                                    f"SELECT timestamp, open, high, low, close, volume FROM ohlcv_intraday WHERE {where} ORDER BY timestamp ASC LIMIT ?",
+                                    tuple(params2 + [cap])
+                                )
+                                rows = cursor.fetchall()
+                        if not rows:
+                            return pd.DataFrame()
+                        dfp = pd.DataFrame(rows, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                        dfp = dfp.set_index(pd.to_datetime(dfp['timestamp'], unit='s'))
+                        return dfp
+                    except Exception as e:
+                        print(f"BACKTEST: fetch_prices_for_symbol failed for {sym}: {e}", file=sys.stderr)
+                        return pd.DataFrame()
+
+                df_prices = fetch_prices_for_symbol(symbol, timeframe)
+                entries = []
+                if not df_prices.empty and match_ts:
+                    # Build a map from timestamp to close price
+                    ts_set = set(int(ts) for ts in match_ts if isinstance(ts, (int, float)))
+                    if len(ts_set) > 0:
+                        # Align by converting index to epoch seconds
+                        idx_seconds = df_prices.index.view('int64') // 10**9
+                        ts_to_close = dict(zip(idx_seconds.tolist(), df_prices['close'].astype(float).tolist()))
+                        for ts in sorted(ts_set):
+                            price = ts_to_close.get(int(ts))
+                            if price is not None:
+                                entries.append({'timestamp': int(ts), 'price': float(price)})
+
+                # Mode control: 'signals' (default) or 'simulate' to produce trades using trade_simulator
+                mode = str(data.get('mode') or 'signals').lower()
+                backtest_config = data.get('backtest_config') or {}
+
+                if mode == 'simulate':
+                    try:
+                        from backend.trade_simulator import derive_rising_entries, simulate_long_only  # type: ignore
+                    except Exception as e:
+                        return {'error': f'Failed to import trade_simulator: {e}', 'requestId': request_id}
+                    # Derive rising-edge entries and simulate
+                    rising_entries = []
+                    if not df_prices.empty and match_ts:
+                        try:
+                            rising_entries = derive_rising_entries(df_prices.index, match_ts)
+                        except Exception as e:
+                            print(f"BACKTEST: derive_rising_entries failed: {e}", file=sys.stderr)
+                            rising_entries = [int(x) for x in match_ts]
+                    trades = []
+                    try:
+                        trades = simulate_long_only(df_prices, symbol, rising_entries, backtest_config)
+                    except Exception as e:
+                        print(f"BACKTEST: simulate_long_only failed: {e}", file=sys.stderr)
+                        trades = []
+                    # Analytics: metrics + equity curve
+                    metrics = {}
+                    equity_curve = {'timestamps': [], 'equity': []}
+                    try:
+                        from backend.backtest_analytics import calculate_metrics, build_equity_curve  # type: ignore
+                        metrics = calculate_metrics(trades, float(backtest_config.get('initial_capital', 10000.0)), df_prices.index, timeframe)
+                        ts_list, eq = build_equity_curve(trades, float(backtest_config.get('initial_capital', 10000.0)), df_prices.index)
+                        equity_curve = {'timestamps': ts_list, 'equity': eq}
+                    except Exception as e:
+                        print(f"BACKTEST: analytics failed: {e}", file=sys.stderr)
+                        metrics = {}
+
+                    resp = {
+                        'signals': {
+                            'symbol': symbol,
+                            'timeframe': timeframe,
+                            'priceField': 'close',
+                            'entries': entries,
+                            'count': len(entries),
+                            'seriesLength': int(len(df_prices)) if isinstance(df_prices, pd.DataFrame) else 0
+                        },
+                        'trades': trades,
+                        'metrics': metrics,
+                        'equity_curve': equity_curve,
+                        'tradeCount': len(trades),
+                        'stats': {
+                            'timeMs': int((time.time() - t0) * 1000),
+                            'requestType': 'simulate'
+                        },
+                        'requestId': request_id
+                    }
+                    print(f"BACKTEST: Completed simulate mode for {symbol}, entries={len(entries)}, trades={len(trades)}, timeMs={resp['stats']['timeMs']}", file=sys.stderr)
+                    return resp
+                else:
+                    resp = {
+                        'signals': {
+                            'symbol': symbol,
+                            'timeframe': timeframe,
+                            'priceField': 'close',
+                            'entries': entries,
+                            'count': len(entries),
+                            'seriesLength': int(len(df_prices)) if isinstance(df_prices, pd.DataFrame) else 0
+                        },
+                        'stats': {
+                            'timeMs': int((time.time() - t0) * 1000),
+                            'requestType': 'signals-only'
+                        },
+                        'requestId': request_id
+                    }
+                    print(f"BACKTEST: Completed Phase 5A for {symbol}, entries={len(entries)}, timeMs={resp['stats']['timeMs']}", file=sys.stderr)
+                    return resp
+            except Exception as e:
+                return {'error': f'run-backtest failed: {e}', 'requestId': request_id}
         else:
             return {
                 'error': 'Unknown action',

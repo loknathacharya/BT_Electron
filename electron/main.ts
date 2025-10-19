@@ -594,6 +594,27 @@ ipcMain.handle('run-scan', async (_event, data) => {
   }
 });
 
+// Run backtest handler (Phase 5A signals-only)
+ipcMain.handle('run-backtest', async (_event, data) => {
+  try {
+    const payload = data || {};
+    if (!payload.symbol) {
+      throw new Error('symbol is required');
+    }
+    // Forward to Python backend
+    const result = await pythonService.sendToPython('run-backtest', payload) as any;
+    if (result?.error) {
+      throw new Error(result.error);
+    }
+    return result;
+  } catch (error) {
+    console.error('Error in run-backtest:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
 // List all symbols in DB
 ipcMain.handle('list-symbols', async () => {
   try {
