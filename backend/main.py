@@ -64,6 +64,15 @@ class DatabaseService:
         except Exception as e:
             return {'error': str(e)}
 
+    # Utility: list available symbols in market DB
+    def list_symbols(self) -> list[str]:
+        try:
+            with sqlite3.connect(self.market_db_path) as conn:
+                cur = conn.execute('SELECT DISTINCT symbol FROM price_data ORDER BY symbol')
+                return [r[0] for r in cur.fetchall()]
+        except Exception:
+            return []
+
     def get_scans(self) -> dict:
         try:
             with sqlite3.connect(self.user_db_path) as conn:
@@ -420,19 +429,15 @@ class DatabaseService:
     def test_connection(self):
         """Test database connection and return status for both databases"""
         try:
-            print(f"DEBUG: Testing connection to user database: {self.user_db_path}", file=sys.stderr)
-            # Test user database
+            # Test user database (quiet)
             with sqlite3.connect(self.user_db_path) as conn:
                 cursor = conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'")
                 user_table_count = cursor.fetchone()[0]
-            print(f"DEBUG: User database connection successful, {user_table_count} tables", file=sys.stderr)
 
-            print(f"DEBUG: Testing connection to market database: {self.market_db_path}", file=sys.stderr)
-            # Test market database
+            # Test market database (quiet)
             with sqlite3.connect(self.market_db_path) as conn:
                 cursor = conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'")
                 market_table_count = cursor.fetchone()[0]
-            print(f"DEBUG: Market database connection successful, {market_table_count} tables", file=sys.stderr)
 
             return {
                 'status': 'connected',
@@ -789,10 +794,15 @@ class DSLTokenizer:
             return self.current
         ch = self._peek()
 
-        # Symbols
-        if ch in '(),[]+-*/':
+        # Symbols and basic operators
+        if ch in '(),[]+*/':
             self._advance()
             self.current = (ch, ch)
+            return self.current
+        # Standalone '-' and '=' should be OP tokens (used in offsets like [-1] or [=3])
+        if ch in '-=':
+            self._advance()
+            self.current = ('OP', ch)
             return self.current
 
         # Comparators and brackets
@@ -928,7 +938,7 @@ class DSLParser:
             self._leave_depth()
 
     def parse_comp(self):
-        # CROSSES_ABOVE/BELOW function form
+        # CROSSES_ABOVE/BELOW function form: CROSSES_ABOVE(a, b)
         if self._check('IDENT') and self.cur[1].upper() in ('CROSSES_ABOVE', 'CROSSES_BELOW'):
             cross_type = self.cur[1].upper()
             self._eat('IDENT')
@@ -938,7 +948,13 @@ class DSLParser:
             right = self.parse_arith()
             self._eat(')')
             return {'op': 'crossover', 'type': cross_type, 'left': left, 'right': right}
+        # Infix crossover: <arith> CROSSES_ABOVE <arith>
         left = self.parse_arith()
+        if self._check('IDENT') and self.cur[1].upper() in ('CROSSES_ABOVE', 'CROSSES_BELOW'):
+            cross_type = self.cur[1].upper()
+            self._eat('IDENT')
+            right = self.parse_arith()
+            return {'op': 'crossover', 'type': cross_type, 'left': left, 'right': right}
         if self._check('OP') and self.cur[1] in ('<', '<=', '>', '>=', '==', '!='):
             op = self.cur[1]
             self._eat('OP')
@@ -1831,6 +1847,50 @@ def handle_request(request, db_service_override=None):
                     'error': f'Failed to create dataset: {str(e)}',
                     'requestId': request_id
                 }
+        elif request.get('action') == 'list-symbols':
+            try:
+                syms = current_db_service.list_symbols()
+                return {'success': True, 'symbols': syms, 'count': len(syms), 'requestId': request_id}
+            except Exception as e:
+                return {'error': f'Failed to list symbols: {e}', 'requestId': request_id}
+        elif request.get('action') == 'validate-symbols':
+            try:
+                data = request.get('data', {}) or {}
+                symbols = data.get('symbols') or []
+                if isinstance(symbols, str):
+                    symbols = [symbols]
+                if not isinstance(symbols, list):
+                    return {'error': 'symbols must be a list or string', 'requestId': request_id}
+                all_syms = set(current_db_service.list_symbols())
+                valid = [s for s in symbols if s in all_syms]
+                invalid = [s for s in symbols if s not in all_syms]
+                return {'success': True, 'valid': valid, 'invalid': invalid, 'requestId': request_id}
+            except Exception as e:
+                return {'error': f'Failed to validate symbols: {e}', 'requestId': request_id}
+        elif request.get('action') == 'parse-symbol-csv':
+            try:
+                data = request.get('data', {}) or {}
+                file_path = data.get('file_path') or data.get('path')
+                if not file_path or not os.path.exists(file_path):
+                    return {'error': 'invalid file path', 'requestId': request_id}
+                # Read via pandas but cheap: only first column or a "symbol" column
+                df = _read_any_ohlcv(file_path)
+                cols = [c.lower() for c in df.columns]
+                sym_col = None
+                for cand in ['symbol', 'ticker', 'sym', 'code']:
+                    if cand in cols:
+                        sym_col = df.columns[cols.index(cand)]
+                        break
+                if sym_col is None:
+                    # Fallback: first column
+                    sym_col = df.columns[0]
+                syms = [str(s).strip() for s in df[sym_col].dropna().astype(str).tolist()]
+                # Basic normalization and dedupe
+                syms = [s for s in syms if s]
+                syms = list(dict.fromkeys(syms))
+                return {'success': True, 'symbols': syms, 'count': len(syms), 'requestId': request_id}
+            except Exception as e:
+                return {'error': f'Failed to parse symbol CSV: {e}', 'requestId': request_id}
         elif request.get('action') == 'import-data':
             data = request.get('data', {})
             file_path = data.get('file_path')
@@ -2170,18 +2230,23 @@ def handle_request(request, db_service_override=None):
             t0 = time.time()
             try:
                 data = request.get('data', {}) or {}
+                print(f"SCAN: Received data keys: {list(data.keys())}", file=sys.stderr)
+                
                 # If a raw DSL string is provided, parse into scannerSpec
                 raw_dsl = data.get('dsl')
                 if isinstance(raw_dsl, str):
+                    print(f"SCAN: DSL mode detected, parsing DSL", file=sys.stderr)
                     try:
                         dsl_spec = dsl_to_scanner_spec(raw_dsl, timeframe=data.get('timeframe'), universe=data.get('universe'))
                         scanner_spec = dsl_spec
+                        print(f"SCAN: DSL parsed successfully, universe in spec: {scanner_spec.get('universe')}", file=sys.stderr)
                     except DSLParseError as pe:
                         return {'error': f'DSL parse error: {str(pe)}', 'requestId': request_id}
                 else:
                     scanner_spec = data.get('scannerSpec') or data.get('spec') or {}
+                    print(f"SCAN: JSON spec mode, universe in spec: {scanner_spec.get('universe')}", file=sys.stderr)
                 options = data.get('options') or {}
-                print(f"SCAN: start requestId={request_id}, timeframe={scanner_spec.get('timeframe')}, includeExplain={options.get('includeExplain', False)}", file=sys.stderr)
+                print(f"SCAN: start requestId={request_id}, timeframe={scanner_spec.get('timeframe')}, universe={scanner_spec.get('universe')}, includeExplain={options.get('includeExplain', False)}", file=sys.stderr)
 
                 if not isinstance(scanner_spec, dict):
                     return {
@@ -2203,90 +2268,131 @@ def handle_request(request, db_service_override=None):
                     timeframe = '1H'
 
                 universe = scanner_spec.get('universe', 'ALL')
+                print(f"SCAN: Universe extracted from spec: {universe}, type: {type(universe)}", file=sys.stderr)
+                
                 # Determine symbols
                 symbols_list = []
                 
                 # Phase 4: Helper function to fetch OHLCV data for a symbol and timeframe
                 def fetch_ohlcv_data(symbol: str, tf: str, conn_override=None) -> pd.DataFrame:
                     """Fetch OHLCV data from database for the specified symbol and timeframe
-                    
+                     
                     Args:
                         symbol: Symbol to fetch
                         tf: Timeframe (1D, 1h, 15m, 5m)
                         conn_override: Optional sqlite3 connection (for parallel execution)
                     """
-                    def _fetch_with_conn(conn):
-                        if tf == '1D':
-                            # Daily data from price_data table
-                            where = "symbol = ?"
-                            params: list = [symbol]
-                            if options.get('dateFrom'):
-                                where += " AND timestamp >= ?"
-                                # assume dateFrom is YYYY-MM-DD
-                                dt = int(time.mktime(datetime.datetime.strptime(options['dateFrom'], '%Y-%m-%d').timetuple()))
-                                params.append(dt)
-                            if options.get('dateTo'):
-                                where += " AND timestamp <= ?"
-                                dt = int(time.mktime(datetime.datetime.strptime(options['dateTo'], '%Y-%m-%d').timetuple())) + 86399
-                                params.append(dt)
-                            cursor = conn.execute(
-                                f"SELECT timestamp, open, high, low, close, volume FROM price_data WHERE {where} ORDER BY timestamp ASC",
-                                tuple(params)
-                            )
-                            rows = cursor.fetchall()
-                            if not rows:
-                                return pd.DataFrame()
-                            df = pd.DataFrame(rows, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                            df = df.set_index(pd.to_datetime(df['timestamp'], unit='s'))
-                            return df
-                        else:
-                            # Intraday data from ohlcv_intraday table
-                            where = "symbol = ? AND timeframe = ?"
-                            params: list = [symbol, tf]
-                            if options.get('dateFrom'):
-                                where += " AND timestamp >= ?"
-                                dt = int(time.mktime(datetime.datetime.strptime(options['dateFrom'], '%Y-%m-%d').timetuple()))
-                                params.append(dt)
-                            if options.get('dateTo'):
-                                where += " AND timestamp <= ?"
-                                dt = int(time.mktime(datetime.datetime.strptime(options['dateTo'], '%Y-%m-%d').timetuple())) + 86399
-                                params.append(dt)
-                            cursor = conn.execute(
-                                f"SELECT timestamp, open, high, low, close, volume FROM ohlcv_intraday WHERE {where} ORDER BY timestamp ASC",
-                                tuple(params)
-                            )
-                            rows = cursor.fetchall()
-                            if not rows:
-                                # No intraday data available - could resample from daily if needed
-                                return pd.DataFrame()
-                            df = pd.DataFrame(rows, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                            df = df.set_index(pd.to_datetime(df['timestamp'], unit='s'))
-                            return df
+                    start_time = time.time()
+                    print(f"DEBUG: fetch_ohlcv_data called for {symbol}, timeframe: {tf}", file=sys.stderr)
                     
-                    if conn_override:
-                        return _fetch_with_conn(conn_override)
-                    else:
-                        with sqlite3.connect(current_db_service.market_db_path) as conn:
-                            return _fetch_with_conn(conn)
+                    def _fetch_with_conn(conn):
+                        query_start = time.time()
+                        try:
+                            if tf == '1D':
+                                # Daily data from price_data table
+                                where = "symbol = ?"
+                                params: list = [symbol]
+                                if options.get('dateFrom'):
+                                    where += " AND timestamp >= ?"
+                                    # assume dateFrom is YYYY-MM-DD
+                                    dt = int(time.mktime(datetime.datetime.strptime(options['dateFrom'], '%Y-%m-%d').timetuple()))
+                                    params.append(dt)
+                                if options.get('dateTo'):
+                                    where += " AND timestamp <= ?"
+                                    dt = int(time.mktime(datetime.datetime.strptime(options['dateTo'], '%Y-%m-%d').timetuple())) + 86399
+                                    params.append(dt)
+                                # Hard cap rows to avoid pathological very long series stalling scans
+                                cap = int(options.get('rowCapPerSymbol', 20000) or 20000)
+                                print(f"DEBUG: Executing daily query for {symbol}: WHERE {where}, LIMIT {cap}", file=sys.stderr)
+                                
+                                # Set timeout for the query
+                                conn.execute("PRAGMA busy_timeout = 10000")  # 10 second timeout
+                                cursor = conn.execute(
+                                    f"SELECT timestamp, open, high, low, close, volume FROM price_data WHERE {where} ORDER BY timestamp ASC LIMIT ?",
+                                    tuple(params + [cap])
+                                )
+                                rows = cursor.fetchall()
+                                query_time = time.time() - query_start
+                                print(f"DEBUG: Daily query for {symbol} returned {len(rows)} rows in {query_time:.3f}s", file=sys.stderr)
+                                if not rows:
+                                    return pd.DataFrame()
+                                df = pd.DataFrame(rows, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                                df = df.set_index(pd.to_datetime(df['timestamp'], unit='s'))
+                                return df
+                            else:
+                                # Intraday data from ohlcv_intraday table
+                                where = "symbol = ? AND timeframe = ?"
+                                params: list = [symbol, tf]
+                                if options.get('dateFrom'):
+                                    where += " AND timestamp >= ?"
+                                    dt = int(time.mktime(datetime.datetime.strptime(options['dateFrom'], '%Y-%m-%d').timetuple()))
+                                    params.append(dt)
+                                if options.get('dateTo'):
+                                    where += " AND timestamp <= ?"
+                                    dt = int(time.mktime(datetime.datetime.strptime(options['dateTo'], '%Y-%m-%d').timetuple())) + 86399
+                                    params.append(dt)
+                                cap = int(options.get('rowCapPerSymbol', 50000) or 50000)
+                                print(f"DEBUG: Executing intraday query for {symbol}: WHERE {where}, LIMIT {cap}", file=sys.stderr)
+                                
+                                # Set timeout for the query
+                                conn.execute("PRAGMA busy_timeout = 10000")  # 10 second timeout
+                                cursor = conn.execute(
+                                    f"SELECT timestamp, open, high, low, close, volume FROM ohlcv_intraday WHERE {where} ORDER BY timestamp ASC LIMIT ?",
+                                    tuple(params + [cap])
+                                )
+                                rows = cursor.fetchall()
+                                query_time = time.time() - query_start
+                                print(f"DEBUG: Intraday query for {symbol} returned {len(rows)} rows in {query_time:.3f}s", file=sys.stderr)
+                                if not rows:
+                                    # No intraday data available - could resample from daily if needed
+                                    return pd.DataFrame()
+                                df = pd.DataFrame(rows, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                                df = df.set_index(pd.to_datetime(df['timestamp'], unit='s'))
+                                return df
+                        except sqlite3.OperationalError as e:
+                            print(f"ERROR: Database query failed for {symbol}: {e}", file=sys.stderr)
+                            return pd.DataFrame()
+                        except Exception as e:
+                            print(f"ERROR: Unexpected error fetching data for {symbol}: {e}", file=sys.stderr)
+                            return pd.DataFrame()
+                    
+                    try:
+                        if conn_override:
+                            result = _fetch_with_conn(conn_override)
+                        else:
+                            with sqlite3.connect(current_db_service.market_db_path) as conn:
+                                result = _fetch_with_conn(conn)
+                        
+                        total_time = time.time() - start_time
+                        print(f"DEBUG: fetch_ohlcv_data for {symbol} completed in {total_time:.3f}s, shape: {result.shape}", file=sys.stderr)
+                        return result
+                    except Exception as e:
+                        total_time = time.time() - start_time
+                        print(f"ERROR: fetch_ohlcv_data for {symbol} failed after {total_time:.3f}s: {e}", file=sys.stderr)
+                        return pd.DataFrame()
                 
                 with sqlite3.connect(current_db_service.market_db_path) as conn:
                     if isinstance(universe, str) and universe.upper().startswith('WATCHLIST:'):
                         wl_name = universe.split(':', 1)[1]
+                        print(f"SCAN: Resolving WATCHLIST: {wl_name}", file=sys.stderr)
                         # Resolve watchlist symbols from user DB
                         wl_syms = current_db_service.get_watchlist_symbols(wl_name)
+                        print(f"SCAN: WATCHLIST {wl_name} resolved to {len(wl_syms)} symbols", file=sys.stderr)
                         if wl_syms:
                             placeholders = ','.join('?' for _ in wl_syms)
                             cursor = conn.execute(f"SELECT DISTINCT symbol FROM price_data WHERE symbol IN ({placeholders}) ORDER BY symbol", tuple(wl_syms))
                         else:
                             cursor = conn.execute("SELECT DISTINCT symbol FROM price_data WHERE 1=0")
                     elif isinstance(universe, list) and len(universe) > 0:
+                        print(f"SCAN: Universe is LIST with {len(universe)} symbols: {universe[:5]}...", file=sys.stderr)
                         # Validate existence
                         placeholders = ','.join('?' for _ in universe)
                         cursor = conn.execute(f"SELECT DISTINCT symbol FROM price_data WHERE symbol IN ({placeholders}) ORDER BY symbol", tuple(universe))
                     else:
+                        print(f"SCAN: Universe is ALL - scanning entire database", file=sys.stderr)
                         cursor = conn.execute("SELECT DISTINCT symbol FROM price_data ORDER BY symbol")
                     symbols_list = [row[0] for row in cursor.fetchall()]
-                print(f"SCAN: symbols to scan={len(symbols_list)}", file=sys.stderr)
+                print(f"SCAN: symbols to scan={len(symbols_list)}, first 5: {symbols_list[:5]}", file=sys.stderr)
 
                 filters = scanner_spec.get('filters', []) or []
                 # If this is a skeleton scan request (no filters) and caller requested latestOnly,
@@ -2462,13 +2568,19 @@ def handle_request(request, db_service_override=None):
 
                 def eval_measure(node, df: pd.DataFrame, symbol: str = '', current_timeframe: str = '') -> pd.Series:
                     """Evaluate a measure node and return a pandas Series. Uses indicator_cache for memoization.
-                    
+                     
                     Phase 3: Supports cross-timeframe queries - if node has 'timeframe' property different
                     from main_timeframe, fetches data for that timeframe and aligns it.
                     """
+                    start_time = time.time()
+                    node_desc = str(node).replace('\n', ' ')[:80] if isinstance(node, dict) else str(node)[:80]
+                    print(f"DEBUG: eval_measure START for {symbol}: {node_desc}", file=sys.stderr)
+                    
                     if node is None:
+                        print(f"DEBUG: eval_measure END (node is None) for {symbol} in {time.time()-start_time:.3f}s", file=sys.stderr)
                         return pd.Series(dtype=float, index=df.index)
                     if not isinstance(node, dict):
+                        print(f"DEBUG: eval_measure END (not dict) for {symbol} in {time.time()-start_time:.3f}s", file=sys.stderr)
                         return pd.Series(np.nan, index=df.index)
                     
                     ntype = node.get('type')
@@ -2479,6 +2591,7 @@ def handle_request(request, db_service_override=None):
                     
                     # Phase 3: If this node specifies a different timeframe, fetch that data
                     if symbol and node_timeframe and node_timeframe != current_timeframe:
+                        print(f"DEBUG: Cross-timeframe fetch for {symbol}: {current_timeframe} -> {node_timeframe}", file=sys.stderr)
                         cross_tf_df = fetch_ohlcv_data(symbol, node_timeframe)
                         if not cross_tf_df.empty:
                             active_df = cross_tf_df
@@ -2522,16 +2635,23 @@ def handle_request(request, db_service_override=None):
                         column_name = mapping[name]
                         if column_name not in active_df.columns:
                             return pd.Series(np.nan, index=index_ref)
-                        return apply_offset(active_df[column_name].astype(float))
+                        result = apply_offset(active_df[column_name].astype(float))
+                        elapsed = time.time() - start_time
+                        print(f"DEBUG: eval_measure attr '{name}' for {symbol} took {elapsed:.3f}s", file=sys.stderr)
+                        return result
                     if ntype == 'func':
                         fname = node.get('name', '').upper()
                         period = int(node.get('period', 14))
                         inner = eval_measure(node.get('measure'), active_df, symbol, active_tf)
                         if fname == 'MAX':
-                            return inner.rolling(window=period, min_periods=period).max()
-                        if fname == 'MIN':
-                            return inner.rolling(window=period, min_periods=period).min()
-                        return pd.Series(np.nan, index=index_ref)
+                            result = inner.rolling(window=period, min_periods=period).max()
+                        elif fname == 'MIN':
+                            result = inner.rolling(window=period, min_periods=period).min()
+                        else:
+                            result = pd.Series(np.nan, index=index_ref)
+                        elapsed = time.time() - start_time
+                        print(f"DEBUG: eval_measure func '{fname}' for {symbol} took {elapsed:.3f}s", file=sys.stderr)
+                        return result
                     if ntype == 'expr':
                         tokens = node.get('expr', []) or []
                         if not tokens:
@@ -2567,7 +2687,10 @@ def handle_request(request, db_service_override=None):
                                 rhs_safe = rhs_series.replace(0, np.nan)
                                 result_series = result_series / rhs_safe
                             idx += 2
-                        return apply_offset(result_series)
+                        result = apply_offset(result_series)
+                        elapsed = time.time() - start_time
+                        print(f"DEBUG: eval_measure expr for {symbol} took {elapsed:.3f}s", file=sys.stderr)
+                        return result
                     if ntype == 'indicator':
                         iname = node.get('name', '').upper()
                         params = node.get('params', {}) or {}
@@ -2576,8 +2699,10 @@ def handle_request(request, db_service_override=None):
                         cache_sig = f"{cache_scope}:{iname}:{json.dumps(params, sort_keys=True)}"
                         cache_key = get_cache_key(symbol, cache_sig)
                         if cache_key in indicator_cache:
+                            print(f"DEBUG: Cache hit for {iname} on {symbol}", file=sys.stderr)
                             return apply_offset(indicator_cache[cache_key])
                         
+                        print(f"DEBUG: Computing {iname} for {symbol} with params: {params}", file=sys.stderr)
                         result_series = None
                         if iname == 'SMA':
                             src = eval_measure(params.get('src') or {'type': 'attr', 'name': 'close'}, active_df, symbol, active_tf)
@@ -2627,29 +2752,51 @@ def handle_request(request, db_service_override=None):
                         if result_series is not None:
                             # Cache the computed indicator
                             indicator_cache[cache_key] = result_series
+                            elapsed = time.time() - start_time
+                            print(f"DEBUG: eval_measure {iname} for {symbol} took {elapsed:.3f}s, cached", file=sys.stderr)
                             return apply_offset(result_series)
                         
                         # Unknown indicator
+                        elapsed = time.time() - start_time
+                        print(f"DEBUG: eval_measure unknown indicator for {symbol} took {elapsed:.3f}s", file=sys.stderr)
                         return pd.Series(np.nan, index=index_ref)
                     # Unknown node type
+                    elapsed = time.time() - start_time
+                    print(f"DEBUG: eval_measure unknown node type for {symbol} took {elapsed:.3f}s", file=sys.stderr)
                     return pd.Series(np.nan, index=index_ref)
 
                 def eval_filter(node, df: pd.DataFrame, symbol: str = '', explain_values: dict | None = None, main_timeframe: str = '1D') -> bool:
                     """Evaluate a filter node and optionally collect explain values for debugging/UI tooltips"""
+                    start_time = time.time()
+                    print(f"DEBUG: eval_filter ENTER for {symbol}, op={node.get('op') if isinstance(node, dict) else 'unknown'}", file=sys.stderr)
                     if not isinstance(node, dict):
+                        print(f"DEBUG: eval_filter EXIT (not dict) for {symbol} in {time.time()-start_time:.3f}s", file=sys.stderr)
                         return False
                     op = node.get('op')
                     if op in ('group', 'logical'):
                         logic = node.get('logic', 'AND').upper()
                         children = node.get('children', []) or []
                         vals = [eval_filter(ch, df, symbol, explain_values, main_timeframe) for ch in children]
-                        return all(vals) if logic == 'AND' else any(vals)
+                        result = all(vals) if logic == 'AND' else any(vals)
+                        elapsed = time.time() - start_time
+                        print(f"DEBUG: eval_filter logical {logic} for {symbol} took {elapsed:.3f}s, result: {result}", file=sys.stderr)
+                        return result
                     if op == 'not':
-                        return not eval_filter(node.get('child'), df, symbol, explain_values, main_timeframe)
+                        result = not eval_filter(node.get('child'), df, symbol, explain_values, main_timeframe)
+                        elapsed = time.time() - start_time
+                        print(f"DEBUG: eval_filter NOT for {symbol} took {elapsed:.3f}s, result: {result}", file=sys.stderr)
+                        return result
                     if op == 'compare':
                         cmp_op = node.get('cmp')
+                        print(f"DEBUG: eval_filter compare {cmp_op} for {symbol} - calling eval_measure for left", file=sys.stderr)
+                        left_start = time.time()
                         left = eval_measure(node.get('left'), df, symbol, main_timeframe)
+                        left_elapsed = time.time() - left_start
+                        print(f"DEBUG: eval_filter compare left took {left_elapsed:.3f}s, now calling eval_measure for right", file=sys.stderr)
+                        right_start = time.time()
                         right = eval_measure(node.get('right'), df, symbol, main_timeframe)
+                        right_elapsed = time.time() - right_start
+                        print(f"DEBUG: eval_filter compare right took {right_elapsed:.3f}s", file=sys.stderr)
                         lv = float(left.iloc[-1]) if len(left) else np.nan
                         rv = float(right.iloc[-1]) if len(right) else np.nan
                         
@@ -2671,6 +2818,8 @@ def handle_request(request, db_service_override=None):
                                 key = f"{left_desc}_{cmp_op}_{right_desc}"
                                 if key in explain_values:
                                     explain_values[key]['result'] = False
+                            elapsed = time.time() - start_time
+                            print(f"DEBUG: eval_filter compare {cmp_op} for {symbol} took {elapsed:.3f}s, result: False (NaN)", file=sys.stderr)
                             return False
                         
                         result = False
@@ -2695,6 +2844,8 @@ def handle_request(request, db_service_override=None):
                             if key in explain_values:
                                 explain_values[key]['result'] = result
                         
+                        elapsed = time.time() - start_time
+                        print(f"DEBUG: eval_filter compare {cmp_op} for {symbol} took {elapsed:.3f}s, result: {result} ({lv} vs {rv})", file=sys.stderr)
                         return result
                     if op == 'crossover':
                         # Phase1: relaxed crossover detection — consider a match when
@@ -2702,13 +2853,24 @@ def handle_request(request, db_service_override=None):
                         # or currently below (CROSSES_BELOW). This avoids missing
                         # cases where the previous value may be NaN due to indicator warmup.
                         cross_type = node.get('type', 'CROSSES_ABOVE').upper()
+                        print(f"DEBUG: eval_filter crossover {cross_type} for {symbol} - calling eval_measure for left", file=sys.stderr)
+                        left_start = time.time()
                         left = eval_measure(node.get('left'), df, symbol, main_timeframe)
+                        left_elapsed = time.time() - left_start
+                        print(f"DEBUG: eval_filter crossover left took {left_elapsed:.3f}s, now calling eval_measure for right", file=sys.stderr)
+                        right_start = time.time()
                         right = eval_measure(node.get('right'), df, symbol, main_timeframe)
+                        right_elapsed = time.time() - right_start
+                        print(f"DEBUG: eval_filter crossover right took {right_elapsed:.3f}s", file=sys.stderr)
                         if len(left) < 1 or len(right) < 1:
+                            elapsed = time.time() - start_time
+                            print(f"DEBUG: eval_filter crossover {cross_type} for {symbol} took {elapsed:.3f}s, result: False (insufficient data)", file=sys.stderr)
                             return False
                         l_curr = left.iloc[-1]
                         r_curr = right.iloc[-1]
                         if np.isnan(l_curr) or np.isnan(r_curr):
+                            elapsed = time.time() - start_time
+                            print(f"DEBUG: eval_filter crossover {cross_type} for {symbol} took {elapsed:.3f}s, result: False (NaN values)", file=sys.stderr)
                             return False
                         
                         result = False
@@ -2728,6 +2890,8 @@ def handle_request(request, db_service_override=None):
                                 'result': result
                             }
                         
+                        elapsed = time.time() - start_time
+                        print(f"DEBUG: eval_filter crossover {cross_type} for {symbol} took {elapsed:.3f}s, result: {result} ({l_curr} vs {r_curr})", file=sys.stderr)
                         return result
                     if op == 'arith':
                         # Optional basic arithmetic chain; evaluate last value
@@ -2755,10 +2919,17 @@ def handle_request(request, db_service_override=None):
                                 elif op2 == '/': acc = acc / rhs if rhs != 0 else np.nan
                                 i += 2
                             # Non-zero truthiness
-                            return bool(acc) and not np.isnan(acc)
+                            result = bool(acc) and not np.isnan(acc)
+                            elapsed = time.time() - start_time
+                            print(f"DEBUG: eval_filter arith for {symbol} took {elapsed:.3f}s, result: {result}", file=sys.stderr)
+                            return result
                         except Exception:
+                            elapsed = time.time() - start_time
+                            print(f"DEBUG: eval_filter arith for {symbol} took {elapsed:.3f}s, result: False (exception)", file=sys.stderr)
                             return False
                     # Unknown op
+                    elapsed = time.time() - start_time
+                    print(f"DEBUG: eval_filter unknown op {op} for {symbol} took {elapsed:.3f}s, result: False", file=sys.stderr)
                     return False
 
                 def eval_expr_series(expr_tokens: list[Any], df: pd.DataFrame, symbol: str, main_timeframe: str, df_index: pd.Index) -> pd.Series:
@@ -2854,12 +3025,14 @@ def handle_request(request, db_service_override=None):
                 # Phase 4: Helper function to process a single symbol (for parallel execution)
                 def process_symbol(sym: str, db_path: str, include_explain: bool):
                     """Process a single symbol and return result if matched, else None"""
+                    start_time = time.time()
                     try:
                         # Create a new connection for this thread
                         with sqlite3.connect(db_path) as conn:
                             # Fetch OHLCV data for the symbol
                             df = fetch_ohlcv_data(sym, timeframe, conn_override=conn)
                             if df.empty:
+                                print(f"DEBUG: process_symbol {sym} - no data", file=sys.stderr)
                                 return None
                             
                             # Collect explain values for this symbol
@@ -2867,10 +3040,14 @@ def handle_request(request, db_service_override=None):
                             
                             # Evaluate all filters; top-level 'filters' is AND of entries
                             match_all = True
-                            for fnode in filters:
+                            for f_idx, fnode in enumerate(filters):
+                                print(f"DEBUG: process_symbol {sym} evaluating filter {f_idx+1}/{len(filters)}", file=sys.stderr)
                                 if not eval_filter(fnode, df, sym, explain_vals, timeframe):
                                     match_all = False
                                     break
+                            
+                            elapsed = time.time() - start_time
+                            print(f"DEBUG: process_symbol {sym} completed in {elapsed:.3f}s, match: {match_all}", file=sys.stderr)
                             
                             if match_all:
                                 result_entry = {
@@ -2882,13 +3059,15 @@ def handle_request(request, db_service_override=None):
                                 return result_entry
                             return None
                     except Exception as e:
-                        print(f"Error processing symbol {sym}: {e}", file=sys.stderr)
+                        elapsed = time.time() - start_time
+                        print(f"DEBUG: process_symbol {sym} failed after {elapsed:.3f}s: {e}", file=sys.stderr)
                         return None
 
                 results = []
                 scanned = 0
                 symbol_timings: list[tuple[str, int]] = []
                 last_progress_ts = time.time()
+                scan_start_time = time.time()
                 
                 # Phase 4: Parallel processing with ThreadPoolExecutor
                 # Determine optimal number of workers (max 8 to avoid overwhelming the database)
@@ -2902,21 +3081,30 @@ def handle_request(request, db_service_override=None):
                     with ThreadPoolExecutor(max_workers=max_workers) as executor:
                         # Submit all tasks
                         db_path_str = str(current_db_service.market_db_path)
+                        print(f"SCAN: Submitting {len(symbols_list)} tasks to thread pool", file=sys.stderr)
                         def _task(sym):
+                            print(f"SCAN: Starting task for symbol: {sym}", file=sys.stderr)
                             t_sym = time.time()
                             res = process_symbol(sym, db_path_str, options.get('includeExplain', False))
                             elapsed_ms = int((time.time() - t_sym) * 1000)
+                            print(f"SCAN: Completed task for symbol: {sym}, took {elapsed_ms}ms", file=sys.stderr)
                             return sym, res, elapsed_ms
 
                         future_to_symbol = {
                             executor.submit(_task, sym): sym
                             for sym in symbols_list
                         }
+                        print(f"SCAN: All tasks submitted, waiting for completion", file=sys.stderr)
                         
                         # Collect results as they complete
-                        for future in as_completed(future_to_symbol):
+                        for future in as_completed(future_to_symbol, timeout=None):
                             scanned += 1
-                            sym, result, elapsed_ms = future.result()
+                            try:
+                                sym, result, elapsed_ms = future.result(timeout=5)
+                            except Exception as fe:
+                                # Timeout or worker error; mark symbol as failed but continue
+                                sym = future_to_symbol.get(future, 'UNKNOWN')
+                                result, elapsed_ms = None, 0
                             symbol_timings.append((sym, elapsed_ms))
                             if result:
                                 # attach per-symbol timing when includeExplain is on
@@ -2942,18 +3130,28 @@ def handle_request(request, db_service_override=None):
                                 last_progress_ts = now
                 else:
                     # Sequential execution for small lists
-                    for sym in symbols_list:
+                    print(f"SCAN: Starting sequential processing of {len(symbols_list)} symbols", file=sys.stderr)
+                    for i, sym in enumerate(symbols_list):
+                        symbol_start_time = time.time()
                         scanned += 1
+                        print(f"SCAN: Processing symbol {i+1}/{len(symbols_list)}: {sym}", file=sys.stderr)
+                        
                         # Clear cache for new symbol to avoid memory issues with many symbols
                         if scanned % 100 == 0:
+                            print(f"SCAN: Clearing indicator cache at symbol {scanned}", file=sys.stderr)
                             indicator_cache.clear()
                         
                         # Fetch OHLCV data for the symbol using the new helper function
-                        t_sym = time.time()
+                        fetch_start = time.time()
+                        print(f"SCAN: Fetching OHLCV data for {sym}", file=sys.stderr)
                         df = fetch_ohlcv_data(sym, timeframe)
+                        fetch_time = time.time() - fetch_start
+                        print(f"SCAN: OHLCV fetch completed for {sym} in {fetch_time:.3f}s", file=sys.stderr)
+                        
                         if df.empty:
+                            print(f"SCAN: No data for symbol {sym}, skipping", file=sys.stderr)
                             # Record timing even if no data
-                            elapsed_ms = int((time.time() - t_sym) * 1000)
+                            elapsed_ms = int((time.time() - symbol_start_time) * 1000)
                             symbol_timings.append((sym, elapsed_ms))
                             # Emit progress periodically
                             now = time.time()
@@ -2968,15 +3166,20 @@ def handle_request(request, db_service_override=None):
                                     }), flush=True)
                                 except Exception:
                                     pass
-                                last_progress_ts = now
+                            last_progress_ts = now
                             continue
+                            
                         if is_backtest:
                             # Evaluate vectorized match series across time
+                            eval_start = time.time()
                             combined = None
                             for fnode in filters:
                                 series_bool = eval_filter_series(fnode, df, sym, timeframe)
                                 combined = series_bool if combined is None else (combined & series_bool)
                             combined = (combined.fillna(False)) if combined is not None else pd.Series(False, index=df.index)
+                            eval_time = time.time() - eval_start
+                            print(f"SCAN: Backtest evaluation for {sym} took {eval_time:.3f}s", file=sys.stderr)
+                            
                             # Extract match timestamps; apply per-symbol cap (newest first)
                             match_idx = combined[combined].index
                             per_cap = 0
@@ -2993,13 +3196,19 @@ def handle_request(request, db_service_override=None):
                             # Phase 4: Collect explain values for this symbol
                             explain_vals = {} if options.get('includeExplain', False) else None
                             # Evaluate all filters; top-level 'filters' is AND of entries
+                            eval_start = time.time()
+                            print(f"SCAN: Evaluating filters for {sym}, data shape: {df.shape}", file=sys.stderr)
                             match_all = True
-                            for fnode in filters:
+                            for f_idx, fnode in enumerate(filters):
+                                print(f"SCAN: Evaluating filter {f_idx+1}/{len(filters)} for {sym}", file=sys.stderr)
                                 if not eval_filter(fnode, df, sym, explain_vals, timeframe):
+                                    print(f"SCAN: Filter {f_idx+1} failed for {sym}", file=sys.stderr)
                                     match_all = False
                                     break
-                            elapsed_ms = int((time.time() - t_sym) * 1000)
+                            eval_time = time.time() - eval_start
+                            elapsed_ms = int((time.time() - symbol_start_time) * 1000)
                             symbol_timings.append((sym, elapsed_ms))
+                            print(f"SCAN: Symbol {sym} evaluation completed in {elapsed_ms}ms (fetch: {fetch_time:.3f}s, eval: {eval_time:.3f}s), match: {match_all}", file=sys.stderr)
                             if match_all:
                                 result_entry = {
                                     'symbol': sym,
@@ -3025,6 +3234,16 @@ def handle_request(request, db_service_override=None):
                             except Exception:
                                 pass
                             last_progress_ts = now
+                
+                # Print scan summary
+                total_scan_time = time.time() - scan_start_time
+                avg_time_per_symbol = total_scan_time / scanned if scanned > 0 else 0
+                print(f"SCAN: Summary - Total time: {total_scan_time:.2f}s, Symbols processed: {scanned}, Results: {len(results)}, Avg time per symbol: {avg_time_per_symbol:.3f}s", file=sys.stderr)
+                
+                # Print timing statistics for slowest symbols
+                if symbol_timings:
+                    symbol_timings.sort(key=lambda x: x[1], reverse=True)
+                    print(f"SCAN: Slowest symbols: {symbol_timings[:5]}", file=sys.stderr)
                 
                 # Phase 4: Add sorting and pagination support
                 # Support both nested and flat formats: {'sort': {'by': 'x', 'order': 'y'}} or {'sortBy': 'x', 'sortOrder': 'y'}
@@ -3085,17 +3304,34 @@ def handle_request(request, db_service_override=None):
                     }
                 # Emit done event
                 try:
-                    print(json.dumps({
+                    done_msg = {
                         'type': 'scan-progress',
                         'requestId': request_id,
                         'phase': 'done',
                         'scanned': scanned,
                         'totalSymbols': len(symbols_list),
                         'matches': total_matches
-                    }), flush=True)
-                except Exception:
-                    pass
+                    }
+                    done_json = json.dumps(done_msg)
+                    print(done_json, flush=True)
+                    print(f"SCAN: Done event emitted, {len(done_json)} bytes", file=sys.stderr)
+                except Exception as e:
+                    print(f"SCAN: Failed to emit done event: {type(e).__name__}: {e}", file=sys.stderr)
+                    import traceback
+                    print(f"SCAN: Traceback: {traceback.format_exc()}", file=sys.stderr)
+                
                 print(f"SCAN: done requestId={request_id}, scanned={scanned}, matches={total_matches}, timeMs={resp['stats']['timeMs']}", file=sys.stderr)
+                print(f"SCAN: About to serialize response for return", file=sys.stderr)
+                try:
+                    resp_json = json.dumps(resp)
+                    print(f"SCAN: Response serialization successful, {len(resp_json)} bytes", file=sys.stderr)
+                except Exception as e:
+                    print(f"SCAN: CRITICAL - Failed to serialize response: {type(e).__name__}: {e}", file=sys.stderr)
+                    print(f"SCAN: resp type={type(resp)}, keys={list(resp.keys()) if isinstance(resp, dict) else 'N/A'}", file=sys.stderr)
+                    import traceback
+                    print(f"SCAN: Traceback: {traceback.format_exc()}", file=sys.stderr)
+                    # Return error response instead
+                    resp = {'error': f'Failed to serialize response: {e}', 'requestId': request_id}
                 return resp
             except Exception as e:
                 return {
@@ -3122,16 +3358,29 @@ def main():
         for line in sys.stdin:
             if line.strip():
                 try:
+                    print(f"MAIN: Raw input line received: {len(line)} bytes", file=sys.stderr)
                     request = json.loads(line.strip())
+                    print(f"MAIN: Processing request with action={request.get('action')}, requestId={request.get('requestId')}", file=sys.stderr)
                     response = handle_request(request)
-                    print(json.dumps(response), flush=True)
+                    print(f"MAIN: Got response type={type(response)}, hasKeys={isinstance(response, dict)}", file=sys.stderr)
+                    if isinstance(response, dict):
+                        print(f"MAIN: Response keys={list(response.keys())}, requestId={response.get('requestId')}", file=sys.stderr)
+                    response_json = json.dumps(response)
+                    print(f"MAIN: JSON serialization successful, length={len(response_json)} bytes", file=sys.stderr)
+                    print(response_json, flush=True)
+                    print(f"MAIN: Response printed successfully to stdout", file=sys.stderr)
                 except json.JSONDecodeError as e:
+                    print(f"MAIN: JSONDecodeError: {e}", file=sys.stderr)
                     print(json.dumps({'error': f'Invalid JSON: {e}'}), flush=True)
                 except Exception as e:
+                    print(f"MAIN: Exception in request handling: {type(e).__name__}: {e}", file=sys.stderr)
+                    import traceback
+                    print(f"MAIN: Traceback: {traceback.format_exc()}", file=sys.stderr)
                     print(json.dumps({'error': f'Processing error: {e}'}), flush=True)
     except KeyboardInterrupt:
         print("Python backend shutting down", flush=True)
     except Exception as e:
+        print(f"MAIN: Fatal error: {type(e).__name__}: {e}", file=sys.stderr)
         print(json.dumps({'error': f'Fatal error: {e}'}), flush=True)
 
 if __name__ == '__main__':

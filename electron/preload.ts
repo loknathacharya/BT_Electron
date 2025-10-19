@@ -24,6 +24,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'import-data',
   'parse-dsl',
       'run-scan',
+      'list-symbols',
+      'validate-symbols',
+      'parse-symbol-csv',
       // datasets
       'get-datasets',
       'get-dataset',

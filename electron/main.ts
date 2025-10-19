@@ -22,20 +22,31 @@ class PythonService {
     });
 
     this.pythonProcess.stdout.on('data', (data: Buffer) => {
-       const output = data.toString().trim();
+       const output = data.toString();
+       const lines = output.split('\n').filter(line => line.trim().length > 0);
+       
+       for (const line of lines) {
+         try {
+           const response = JSON.parse(line.trim());
 
-       try {
-         const response = JSON.parse(output);
-
-         // Handle progress events and forward to renderer
-         if (response.type === 'import-progress' || response.type === 'import-summary' || response.type === 'scan-progress') {
-           console.log('IMPORT-PROGRESS:', response);
-           if (mainWindow && !mainWindow.isDestroyed()) {
-             const channel = response.type === 'scan-progress' ? 'scan-progress' : 'import-progress';
-             mainWindow.webContents.send(channel, response);
-           }
-           // Also resolve the request if it's a final summary
-           if (response.type === 'import-summary') {
+           // Handle progress events and forward to renderer
+           if (response.type === 'import-progress' || response.type === 'import-summary' || response.type === 'scan-progress') {
+             console.log('IMPORT-PROGRESS:', response);
+             if (mainWindow && !mainWindow.isDestroyed()) {
+               const channel = response.type === 'scan-progress' ? 'scan-progress' : 'import-progress';
+               mainWindow.webContents.send(channel, response);
+             }
+             // Also resolve the request if it's a final summary (import only, scan-progress doesn't resolve)
+             if (response.type === 'import-summary') {
+               const requestId = response.requestId;
+               if (requestId && this.pendingRequests.has(requestId)) {
+                 const resolve = this.pendingRequests.get(requestId);
+                 this.pendingRequests.delete(requestId);
+                 resolve(response);
+               }
+             }
+           } else {
+             // Handle regular responses by resolving pending requests
              const requestId = response.requestId;
              if (requestId && this.pendingRequests.has(requestId)) {
                const resolve = this.pendingRequests.get(requestId);
@@ -43,19 +54,11 @@ class PythonService {
                resolve(response);
              }
            }
-         } else {
-           // Handle regular responses by resolving pending requests
-           const requestId = response.requestId;
-           if (requestId && this.pendingRequests.has(requestId)) {
-             const resolve = this.pendingRequests.get(requestId);
-             this.pendingRequests.delete(requestId);
-             resolve(response);
+         } catch (e) {
+           // Only log import-related stderr output
+           if (line && (line.includes('IMPORT:') || line.includes('DEBUG:') || line.includes('Starting') || line.includes('File') || line.includes('Database'))) {
+             console.log('PYTHON:', line);
            }
-         }
-       } catch (e) {
-         // Only log import-related stderr output
-         if (output && (output.includes('IMPORT:') || output.includes('DEBUG:') || output.includes('Starting') || output.includes('File') || output.includes('Database'))) {
-           console.log('PYTHON:', output);
          }
        }
      });
@@ -575,11 +578,8 @@ ipcMain.handle('create-dataset', async (_event, data) => {
 // Run scanner handler (Phase 0 skeleton)
 ipcMain.handle('run-scan', async (_event, data) => {
   try {
-    const { scannerSpec, options } = data || {};
-    const result = await pythonService.sendToPython('run-scan', {
-      scannerSpec: scannerSpec || {},
-      options: options || { latestOnly: true, limit: 5000 }
-    }) as any;
+    // Forward payload verbatim to support DSL and universe settings
+    const result = await pythonService.sendToPython('run-scan', data || {}) as any;
 
     if (result.error) {
       throw new Error(result.error);
@@ -591,6 +591,44 @@ ipcMain.handle('run-scan', async (_event, data) => {
     return {
       error: error instanceof Error ? error.message : String(error)
     };
+  }
+});
+
+// List all symbols in DB
+ipcMain.handle('list-symbols', async () => {
+  try {
+    const result = await pythonService.sendToPython('list-symbols') as any;
+    if (result.error) throw new Error(result.error);
+    return result;
+  } catch (error) {
+    console.error('Error in list-symbols:', error);
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+});
+
+// Validate one or more symbols exist in DB
+ipcMain.handle('validate-symbols', async (_event, data) => {
+  try {
+    const { symbols } = data || {};
+    const result = await pythonService.sendToPython('validate-symbols', { symbols }) as any;
+    if (result.error) throw new Error(result.error);
+    return result;
+  } catch (error) {
+    console.error('Error in validate-symbols:', error);
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+});
+
+// Parse a CSV/XLSX file to extract a symbol list
+ipcMain.handle('parse-symbol-csv', async (_event, data) => {
+  try {
+    const { filePath } = data || {};
+    const result = await pythonService.sendToPython('parse-symbol-csv', { file_path: filePath }) as any;
+    if (result.error) throw new Error(result.error);
+    return result;
+  } catch (error) {
+    console.error('Error in parse-symbol-csv:', error);
+    return { error: error instanceof Error ? error.message : String(error) };
   }
 });
 

@@ -92,6 +92,8 @@ const Scanner: React.FC = () => {
   const [timeframe, setTimeframe] = useState<'1D' | '1h' | '15m' | '5m'>('1D');
   const [universeMode, setUniverseMode] = useState<'ALL' | 'LIST'>('ALL');
   const [universeList, setUniverseList] = useState<string>('');
+  const [validationStatus, setValidationStatus] = useState<string>('');
+  const [saveListName, setSaveListName] = useState<string>('');
   const [filters, setFilters] = useState<any[]>([initialFilter()]);
   const [useBuilder, setUseBuilder] = useState<boolean>(true);
   const [builderTree, setBuilderTree] = useState<BuilderTree | null>(null);
@@ -312,8 +314,57 @@ const Scanner: React.FC = () => {
                   placeholder="AAPL, MSFT, TSLA"
                   value={universeList}
                   onChange={(e) => setUniverseList(e.target.value)}
-                  style={{ width: '100%' }}
+                  style={{ width: '100%', marginBottom: 8 }}
                 />
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 8, marginBottom: 8 }}>
+                  <button
+                    className="btn btn-secondary"
+                    onClick={async () => {
+                      const list = universeList.split(',').map(s => s.trim()).filter(Boolean);
+                      const first = list[0];
+                      if (!first) { setValidationStatus('Enter at least one symbol'); return; }
+                      const res = await window.electronAPI.invoke('validate-symbols', { symbols: [first] });
+                      if (res?.error) { setValidationStatus(res.error); return; }
+                      if (res.invalid && res.invalid.length) {
+                        setValidationStatus(`Invalid: ${res.invalid.join(', ')}`);
+                      } else {
+                        setValidationStatus('Valid');
+                      }
+                    }}
+                  >Validate</button>
+                  <button
+                    className="btn btn-secondary"
+                    onClick={async () => {
+                      const dlg = await window.electronAPI.invoke('open-file-dialog');
+                      if (!dlg || dlg.canceled || !dlg.filePath) return;
+                      const parsed = await window.electronAPI.invoke('parse-symbol-csv', { filePath: dlg.filePath });
+                      if (parsed?.error) { setValidationStatus(parsed.error); return; }
+                      const syms: string[] = parsed.symbols || [];
+                      setUniverseList(syms.join(', '));
+                      setValidationStatus(`Loaded ${syms.length} symbols from CSV`);
+                    }}
+                  >Load CSV</button>
+                  <button
+                    className="btn btn-secondary"
+                    onClick={async () => {
+                      const list = universeList.split(',').map(s => s.trim()).filter(Boolean);
+                      if (!saveListName) { setValidationStatus('Enter watchlist name'); return; }
+                      if (list.length === 0) { setValidationStatus('Enter symbols first'); return; }
+                      const res = await window.electronAPI.invoke('save-watchlist', { name: saveListName, symbols: list, description: `Saved from scanner on ${new Date().toISOString()}` });
+                      if (res?.error) { setValidationStatus(res.error); return; }
+                      setValidationStatus(`Saved watchlist '${saveListName}' (${list.length} symbols)`);
+                      setSaveListName('');
+                    }}
+                  >Save as Watchlist</button>
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                  <input type="text" placeholder="Watchlist name to save" value={saveListName} onChange={e => setSaveListName(e.target.value)} style={{ flex: 1 }} />
+                </div>
+                {validationStatus && (
+                  <div style={{ padding: 8, borderRadius: 4, background: validationStatus.startsWith('Invalid') ? '#ffebee' : '#e8f5e9', color: validationStatus.startsWith('Invalid') ? '#c62828' : '#2e7d32', fontSize: '0.9em' }}>
+                    {validationStatus}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -576,27 +627,38 @@ const Scanner: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
-                {results.map((r, idx) => (
-                  <tr key={`${r.symbol}-${idx}`} style={{ background: idx % 2 ? '#fff' : '#fafafa' }}>
-                    <td style={{ padding: '8px 10px', borderBottom: '1px solid #eee' }}>{r.symbol}</td>
-                    <td style={{ padding: '8px 10px', borderBottom: '1px solid #eee' }}>{new Date(r.timestamp * 1000).toLocaleString()}</td>
-                    <td style={{ padding: '8px 10px', borderBottom: '1px solid #eee' }}>
-                      {r.explain ? (
-                        <div title={JSON.stringify(r.explain, null, 2)} style={{ cursor: 'help', fontSize: '0.85em', color: '#555' }}>
-                          {Object.keys(r.explain).length} values (hover)
+                {results.map((r, idx) => {
+                  // Handle both backtest and non-backtest modes
+                  const isBacktest = Array.isArray(r.matches);
+                  const displayTimestamp = r.timestamp ? new Date(r.timestamp * 1000).toLocaleString() : 
+                                          (isBacktest && r.matches?.length > 0 ? new Date(r.matches[r.matches.length - 1].timestamp * 1000).toLocaleString() : 'N/A');
+                  
+                  return (
+                    <tr key={`${r.symbol}-${idx}`} style={{ background: idx % 2 ? '#fff' : '#fafafa' }}>
+                      <td style={{ padding: '8px 10px', borderBottom: '1px solid #eee' }}>{r.symbol}</td>
+                      <td style={{ padding: '8px 10px', borderBottom: '1px solid #eee' }}>{displayTimestamp}</td>
+                      <td style={{ padding: '8px 10px', borderBottom: '1px solid #eee' }}>
+                        {r.explain ? (
+                          <div title={JSON.stringify(r.explain, null, 2)} style={{ cursor: 'help', fontSize: '0.85em', color: '#555' }}>
+                            {Object.keys(r.explain).length} values (hover)
+                          </div>
+                        ) : isBacktest ? (
+                          <div style={{ fontSize: '0.85em', color: '#555' }}>
+                            {r.matches?.length || 0} match{r.matches?.length !== 1 ? 'es' : ''}
+                          </div>
+                        ) : (
+                          <span style={{ color: '#999', fontSize: '0.85em' }}>–</span>
+                        )}
+                      </td>
+                      <td style={{ padding: '8px 10px', borderBottom: '1px solid #eee' }}>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <button className="btn btn-secondary" onClick={() => openPreview(r.symbol)}>Quick Preview</button>
+                          <button className="btn" onClick={() => viewInDataManagement(r.symbol)}>View in Data Management</button>
                         </div>
-                      ) : (
-                        <span style={{ color: '#999', fontSize: '0.85em' }}>–</span>
-                      )}
-                    </td>
-                    <td style={{ padding: '8px 10px', borderBottom: '1px solid #eee' }}>
-                      <div style={{ display: 'flex', gap: 8 }}>
-                        <button className="btn btn-secondary" onClick={() => openPreview(r.symbol)}>Quick Preview</button>
-                        <button className="btn" onClick={() => viewInDataManagement(r.symbol)}>View in Data Management</button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
             {/* Pagination controls */}
