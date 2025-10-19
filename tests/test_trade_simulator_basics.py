@@ -15,7 +15,7 @@ def test_simulate_long_only_take_profit():
     # Construct a simple series where TP is hit on the second bar after entry
     df = make_df([
         {'open': 100, 'high': 102, 'low': 99, 'close': 101},  # signal bar
-        {'open': 101, 'high': 111, 'low': 100, 'close': 110},  # fill at 101, TP 10% -> 111, hit on this bar
+        {'open': 101, 'high': 111.2, 'low': 100, 'close': 110},  # fill at 101, TP 10% -> 111.1, hit on this bar
         {'open': 112, 'high': 115, 'low': 110, 'close': 114},
     ])
     # Entry timestamp is the first bar; fill occurs at next bar open (bar 1)
@@ -36,8 +36,9 @@ def test_simulate_long_only_take_profit():
     assert len(trades) == 1
     tr = trades[0]
     assert tr['entry_price'] == 101
-    # TP at 111 should exit on bar 1 at price 111
-    assert tr['exit_price'] == 111
+    # TP at 101 * 1.10 = 111.1 should exit on bar 1 at price 111.1
+    expected_tp = 101 * 1.10
+    assert abs(tr['exit_price'] - expected_tp) < 1e-6, f"Expected exit_price ~{expected_tp}, got {tr['exit_price']}"
     assert tr['exit_reason'] in ('take_profit', 'stop_loss_and_take_profit')
 
 
