@@ -4,9 +4,8 @@ import './App.css';
 // Component imports
 import ImportData from './components/ImportData';
 import ViewResults from './components/ViewResults';
-import BacktestDev from './components/BacktestDev';
 import Scanner from '@/components/Scanner';
-import BacktestBuilder from './components/BacktestBuilder';
+import BacktestEngine from './components/BacktestEngine';
 import PortfolioBacktest from './components/PortfolioBacktest';
 import { WalkForwardAnalysis } from './components/WalkForwardAnalysis';
 import BackupRecovery from './components/BackupRecovery';
@@ -19,7 +18,6 @@ function Navigation() {
     { path: '/scanner', label: 'Scanner' },
     { path: '/data-management', label: 'Data Management' },
     { path: '/backtest', label: 'Backtest' },
-    { path: '/backtest-dev', label: 'Backtest Dev' },
     { path: '/portfolio', label: 'Portfolio' },
     { path: '/walk-forward', label: 'Walk-Forward' },
     { path: '/backup-recovery', label: 'Backup & Recovery' },
@@ -56,8 +54,7 @@ function AppContent() {
           <Route path="/" element={<ImportData />} />
           <Route path="/scanner" element={<Scanner />} />
           <Route path="/data-management" element={<ViewResults />} />
-          <Route path="/backtest" element={<BacktestBuilder />} />
-          <Route path="/backtest-dev" element={<BacktestDev />} />
+          <Route path="/backtest" element={<BacktestEngine />} />
           <Route path="/portfolio" element={<PortfolioBacktest scannerSpec={{}} />} />
           <Route path="/walk-forward" element={<WalkForwardAnalysis scannerSpec={{}} />} />
           <Route path="/backup-recovery" element={<BackupRecovery />} />
