@@ -55,8 +55,8 @@ function AppContent() {
       <Navigation />
       <main className="main-content">
         <Routes>
-          {/* Default to Portfolio page on app load */}
-          <Route path="/" element={<Navigate to="/portfolio" replace />} />
+          {/* Import Data as home page */}
+          <Route path="/" element={<ImportData />} />
           <Route path="/strategy" element={<BuildStrategy />} />
           <Route path="/scanner" element={<Scanner />} />
           <Route path="/data-management" element={<ViewResults />} />
@@ -67,7 +67,7 @@ function AppContent() {
           <Route path="/walk-forward" element={<WalkForwardAnalysis scannerSpec={{}} />} />
           <Route path="/backup-recovery" element={<BackupRecovery />} />
           {/* Fallback */}
-          <Route path="*" element={<Navigate to="/portfolio" replace />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
     </div>
