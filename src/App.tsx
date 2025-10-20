@@ -3,7 +3,6 @@ import './App.css';
 
 // Component imports
 import ImportData from './components/ImportData';
-import BuildStrategy from './components/BuildStrategy';
 import ViewResults from './components/ViewResults';
 import BacktestDev from './components/BacktestDev';
 import Scanner from '@/components/Scanner';
@@ -17,10 +16,8 @@ function Navigation() {
 
   const navItems = [
     { path: '/', label: 'Import Data' },
-    { path: '/strategy', label: 'Build Strategy' },
     { path: '/scanner', label: 'Scanner' },
     { path: '/data-management', label: 'Data Management' },
-    { path: '/results', label: 'Results & Analysis' },
     { path: '/backtest', label: 'Backtest' },
     { path: '/backtest-dev', label: 'Backtest Dev' },
     { path: '/portfolio', label: 'Portfolio' },
@@ -57,10 +54,8 @@ function AppContent() {
         <Routes>
           {/* Import Data as home page */}
           <Route path="/" element={<ImportData />} />
-          <Route path="/strategy" element={<BuildStrategy />} />
           <Route path="/scanner" element={<Scanner />} />
           <Route path="/data-management" element={<ViewResults />} />
-          <Route path="/results" element={<ViewResults />} />
           <Route path="/backtest" element={<BacktestBuilder />} />
           <Route path="/backtest-dev" element={<BacktestDev />} />
           <Route path="/portfolio" element={<PortfolioBacktest scannerSpec={{}} />} />
