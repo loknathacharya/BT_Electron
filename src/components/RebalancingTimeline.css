@@ -1,0 +1,272 @@
+/* Rebalancing Timeline Component Styles */
+
+.rebalancing-timeline {
+  padding: 20px;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.rebalancing-timeline h3 {
+  margin: 0 0 20px 0;
+  color: #333;
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.rebalancing-timeline h4 {
+  margin: 20px 0 15px 0;
+  color: #444;
+  font-size: 18px;
+  font-weight: 500;
+}
+
+.rebalancing-timeline h5 {
+  margin: 15px 0 10px 0;
+  color: #555;
+  font-size: 16px;
+  font-weight: 500;
+}
+
+/* Summary Cards */
+.rebalance-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 15px;
+  margin-bottom: 30px;
+}
+
+.summary-card {
+  padding: 20px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-radius: 8px;
+  color: white;
+  text-align: center;
+}
+
+.summary-card .card-label {
+  font-size: 14px;
+  opacity: 0.9;
+  margin-bottom: 8px;
+}
+
+.summary-card .card-value {
+  font-size: 28px;
+  font-weight: 600;
+}
+
+/* Chart Section */
+.chart-section {
+  margin: 30px 0;
+  padding: 20px;
+  background: #f8f9fa;
+  border-radius: 8px;
+}
+
+.chart-legend {
+  display: flex;
+  justify-content: center;
+  gap: 30px;
+  margin-top: 15px;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.legend-color {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+}
+
+/* Rebalancing Events Table */
+.rebalance-table-section {
+  margin: 30px 0;
+}
+
+.rebalance-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: white;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.rebalance-table thead {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+}
+
+.rebalance-table th {
+  padding: 15px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.rebalance-table td {
+  padding: 12px 15px;
+  border-bottom: 1px solid #eee;
+  font-size: 14px;
+}
+
+.rebalance-table tbody tr {
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.rebalance-table tbody tr:hover {
+  background-color: #f8f9fa;
+}
+
+.rebalance-table tbody tr.selected {
+  background-color: #e3f2fd;
+}
+
+.high-deviation {
+  color: #d32f2f;
+  font-weight: 600;
+}
+
+.view-details-btn {
+  padding: 6px 16px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: transform 0.2s;
+}
+
+.view-details-btn:hover {
+  transform: scale(1.05);
+}
+
+/* Period Details */
+.period-details {
+  margin-top: 30px;
+  padding: 25px;
+  background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+  border-radius: 8px;
+  border: 2px solid #667eea;
+}
+
+.period-details h4 {
+  margin: 0 0 20px 0;
+  color: #333;
+  font-size: 20px;
+}
+
+.details-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+  gap: 20px;
+  margin-bottom: 20px;
+}
+
+.details-section {
+  background: white;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.details-section h5 {
+  margin: 0 0 15px 0;
+  color: #667eea;
+  font-size: 16px;
+  font-weight: 600;
+  border-bottom: 2px solid #667eea;
+  padding-bottom: 8px;
+}
+
+/* Weights and Trades Tables */
+.weights-table,
+.trades-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.weights-table th,
+.trades-table th {
+  padding: 10px;
+  text-align: left;
+  background: #f8f9fa;
+  border-bottom: 2px solid #dee2e6;
+  font-size: 13px;
+  font-weight: 600;
+  color: #555;
+}
+
+.weights-table td,
+.trades-table td {
+  padding: 10px;
+  border-bottom: 1px solid #eee;
+  font-size: 14px;
+}
+
+.weights-table tbody tr:hover,
+.trades-table tbody tr:hover {
+  background-color: #f8f9fa;
+}
+
+.out-of-range {
+  color: #d32f2f;
+  font-weight: 600;
+  background-color: #ffebee;
+}
+
+.action-buy {
+  color: #2e7d32;
+  font-weight: 600;
+  background-color: #e8f5e9;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.action-sell {
+  color: #d32f2f;
+  font-weight: 600;
+  background-color: #ffebee;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.no-trades {
+  color: #666;
+  font-style: italic;
+  padding: 20px;
+  text-align: center;
+  background: #f8f9fa;
+  border-radius: 4px;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .rebalance-summary {
+    grid-template-columns: 1fr;
+  }
+  
+  .details-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .rebalance-table {
+    font-size: 12px;
+  }
+  
+  .rebalance-table th,
+  .rebalance-table td {
+    padding: 8px;
+  }
+  
+  .chart-section {
+    padding: 15px;
+  }
+}

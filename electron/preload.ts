@@ -42,10 +42,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'get-watchlist-symbols',
       'delete-watchlist',
       'run-backtest',
+      'optimize-backtest',
+      'run-portfolio-backtest',
+      'run-walk-forward',
       'get-strategies',
       'save-strategy',
       'get-price-data',
-      'get-backtest-results'
+      'get-backtest-results',
+      // Backup & Recovery
+      'create-backup',
+      'list-backups',
+      'verify-backup',
+      'restore-backup',
+      'delete-backup',
+      'get-backup-stats',
+      'check-database-integrity',
+      'check-all-databases',
+      'recover-from-wal',
+      'export-database',
+      'get-backup-config',
+      'update-backup-config'
     ];
 
     if (validChannels.includes(channel)) {

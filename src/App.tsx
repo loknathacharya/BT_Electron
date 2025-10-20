@@ -1,4 +1,4 @@
-import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
+import { HashRouter as Router, Routes, Route, Link, useLocation, Navigate } from 'react-router-dom';
 import './App.css';
 
 // Component imports
@@ -8,6 +8,9 @@ import ViewResults from './components/ViewResults';
 import BacktestDev from './components/BacktestDev';
 import Scanner from '@/components/Scanner';
 import BacktestBuilder from './components/BacktestBuilder';
+import PortfolioBacktest from './components/PortfolioBacktest';
+import { WalkForwardAnalysis } from './components/WalkForwardAnalysis';
+import BackupRecovery from './components/BackupRecovery';
 
 function Navigation() {
   const location = useLocation();
@@ -20,6 +23,9 @@ function Navigation() {
     { path: '/results', label: 'Results & Analysis' },
     { path: '/backtest', label: 'Backtest' },
     { path: '/backtest-dev', label: 'Backtest Dev' },
+    { path: '/portfolio', label: 'Portfolio' },
+    { path: '/walk-forward', label: 'Walk-Forward' },
+    { path: '/backup-recovery', label: 'Backup & Recovery' },
   ];
 
   return (
@@ -49,13 +55,19 @@ function AppContent() {
       <Navigation />
       <main className="main-content">
         <Routes>
-          <Route path="/" element={<ImportData />} />
+          {/* Default to Portfolio page on app load */}
+          <Route path="/" element={<Navigate to="/portfolio" replace />} />
           <Route path="/strategy" element={<BuildStrategy />} />
           <Route path="/scanner" element={<Scanner />} />
           <Route path="/data-management" element={<ViewResults />} />
           <Route path="/results" element={<ViewResults />} />
           <Route path="/backtest" element={<BacktestBuilder />} />
           <Route path="/backtest-dev" element={<BacktestDev />} />
+          <Route path="/portfolio" element={<PortfolioBacktest scannerSpec={{}} />} />
+          <Route path="/walk-forward" element={<WalkForwardAnalysis scannerSpec={{}} />} />
+          <Route path="/backup-recovery" element={<BackupRecovery />} />
+          {/* Fallback */}
+          <Route path="*" element={<Navigate to="/portfolio" replace />} />
         </Routes>
       </main>
     </div>

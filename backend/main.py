@@ -17,6 +17,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 import re
 
+# Import backup and recovery managers
+try:
+    from backend.backup_manager import BackupManager, RecoveryManager
+except ImportError:
+    from backup_manager import BackupManager, RecoveryManager
+
 # Ensure repository root is on sys.path so 'backend.*' absolute imports work when running this file directly
 try:
     _this_file = Path(__file__).resolve()
@@ -3557,6 +3563,600 @@ def handle_request(request, db_service_override=None):
                     return resp
             except Exception as e:
                 return {'error': f'run-backtest failed: {e}', 'requestId': request_id}
+        
+        elif request.get('action') == 'optimize-backtest':
+            # Phase 6: Parameter Optimization - Grid search over parameter ranges
+            t0 = time.time()
+            try:
+                from backend.parameter_optimizer import (  # type: ignore
+                    generate_parameter_grid,
+                    generate_random_parameters,
+                    apply_parameters_to_spec,
+                    rank_results,
+                    extract_best_parameters,
+                    calculate_optimization_stats,
+                    validate_parameter_ranges
+                )
+                
+                data = request.get('data', {}) or {}
+                scanner_spec = data.get('scannerSpec') or {}
+                param_ranges = data.get('parameterRanges') or {}
+                symbol = data.get('symbol') or 'AAPL'
+                timeframe = str(scanner_spec.get('timeframe', '1D')).upper()
+                backtest_config = data.get('backtestConfig') or {}
+                optimization_config = data.get('optimizationConfig') or {}
+                
+                # Validate parameter ranges
+                is_valid, error_msg = validate_parameter_ranges(param_ranges)
+                if not is_valid:
+                    return {'error': error_msg, 'requestId': request_id}
+                
+                # Generate parameter combinations
+                search_mode = optimization_config.get('searchMode', 'grid')
+                if search_mode == 'random':
+                    n_samples = int(optimization_config.get('randomSamples', 100))
+                    seed = optimization_config.get('randomSeed')
+                    param_combinations = generate_random_parameters(param_ranges, n_samples, seed)
+                else:
+                    param_combinations = generate_parameter_grid(param_ranges)
+                
+                print(f"OPTIMIZE: Starting optimization with {len(param_combinations)} parameter combinations", file=sys.stderr)
+                
+                # Run backtest for each parameter combination
+                results = []
+                for idx, params in enumerate(param_combinations):
+                    try:
+                        # Apply parameters to spec
+                        parameterized_spec = apply_parameters_to_spec(scanner_spec, params)
+                        
+                        # Create a mini backtest request
+                        backtest_request = {
+                            'action': 'run-backtest',
+                            'requestId': f"{request_id}_opt_{idx}",
+                            'data': {
+                                'scannerSpec': parameterized_spec,
+                                'symbol': symbol,
+                                'backtestConfig': backtest_config,
+                                'mode': 'simulate'
+                            }
+                        }
+                        
+                        # Run backtest
+                        backtest_response = handle_request(backtest_request, db_service_override=current_db_service)
+                        
+                        if 'error' not in backtest_response:
+                            results.append({
+                                'parameters': params,
+                                'metrics': backtest_response.get('metrics', {}),
+                                'tradeCount': backtest_response.get('tradeCount', 0),
+                                'stats': backtest_response.get('stats', {})
+                            })
+                        
+                        # Progress reporting (every 10%)
+                        if (idx + 1) % max(1, len(param_combinations) // 10) == 0:
+                            progress = int(((idx + 1) / len(param_combinations)) * 100)
+                            print(f"OPTIMIZE: Progress {progress}% ({idx + 1}/{len(param_combinations)})", file=sys.stderr)
+                    
+                    except Exception as e:
+                        print(f"OPTIMIZE: Failed for params {params}: {e}", file=sys.stderr)
+                        continue
+                
+                # Rank results
+                rank_metric = optimization_config.get('rankMetric', 'sharpe_ratio')
+                ranked_results = rank_results(results, metric=rank_metric, ascending=False)
+                
+                # Extract best parameters
+                top_n = int(optimization_config.get('topN', 10))
+                best_params = extract_best_parameters(ranked_results, metric=rank_metric, top_n=top_n)
+                
+                # Calculate stats
+                stats = calculate_optimization_stats(results, metric=rank_metric)
+                
+                elapsed_ms = int((time.time() - t0) * 1000)
+                print(f"OPTIMIZE: Completed {len(results)} backtests in {elapsed_ms}ms", file=sys.stderr)
+                
+                return {
+                    'results': ranked_results,
+                    'bestParameters': best_params,
+                    'statistics': stats,
+                    'totalCombinations': len(param_combinations),
+                    'successfulRuns': len(results),
+                    'stats': {
+                        'timeMs': elapsed_ms,
+                        'searchMode': search_mode,
+                        'rankMetric': rank_metric
+                    },
+                    'requestId': request_id
+                }
+            
+            except Exception as e:
+                import traceback
+                print(f"OPTIMIZE: Error: {e}\n{traceback.format_exc()}", file=sys.stderr)
+                return {'error': f'optimize-backtest failed: {e}', 'requestId': request_id}
+        
+        elif request.get('action') == 'run-portfolio-backtest':
+            # Phase 8: Portfolio Management - Multi-symbol backtests with correlation analysis
+            t0 = time.time()
+            try:
+                from backend.portfolio_manager import (  # type: ignore
+                    calculate_portfolio_weights,
+                    build_portfolio_equity_curve,
+                    calculate_portfolio_metrics,
+                    build_correlation_matrix_from_trades,
+                    aggregate_trades_by_symbol,
+                    calculate_diversification_ratio
+                )
+                
+                data = request.get('data', {}) or {}
+                scanner_spec = data.get('scannerSpec') or {}
+                symbols = data.get('symbols') or []
+                timeframe = str(scanner_spec.get('timeframe', '1D')).upper()
+                backtest_config = data.get('backtestConfig') or {}
+                portfolio_config = data.get('portfolioConfig') or {}
+                
+                if not symbols:
+                    return {'error': 'At least one symbol required', 'requestId': request_id}
+                
+                print(f"PORTFOLIO: Running backtest for {len(symbols)} symbols: {symbols}", file=sys.stderr)
+                
+                # Calculate portfolio weights
+                allocation_mode = portfolio_config.get('allocationMode', 'equal')
+                custom_weights = portfolio_config.get('customWeights', {})
+                weights = calculate_portfolio_weights(allocation_mode, symbols, custom_weights)
+                
+                # Run backtest for each symbol
+                symbol_trades = {}
+                symbol_metrics = {}
+                all_indices = None
+                errors_by_symbol = {}
+                
+                for symbol in symbols:
+                    try:
+                        print(f"PORTFOLIO: Running backtest for {symbol}", file=sys.stderr)
+                        # Create backtest request for this symbol
+                        backtest_request = {
+                            'action': 'run-backtest',
+                            'requestId': f"{request_id}_portfolio_{symbol}",
+                            'data': {
+                                'scannerSpec': scanner_spec,
+                                'symbol': symbol,
+                                'backtestConfig': backtest_config,
+                                'mode': 'simulate'
+                            }
+                        }
+                        
+                        # Run backtest
+                        backtest_response = handle_request(backtest_request, db_service_override=current_db_service)
+                        
+                        if 'error' not in backtest_response:
+                            symbol_trades[symbol] = backtest_response.get('trades', [])
+                            symbol_metrics[symbol] = backtest_response.get('metrics', {})
+                            print(f"PORTFOLIO: Success for {symbol}: {len(symbol_trades[symbol])} trades", file=sys.stderr)
+                            
+                            # Store index from first successful backtest
+                            if all_indices is None:
+                                # Reconstruct index from signals or use a default range
+                                signals = backtest_response.get('signals', {})
+                                series_length = signals.get('seriesLength', 252)
+                                all_indices = pd.date_range('2023-01-01', periods=series_length, freq='D')
+                        else:
+                            err_msg = backtest_response.get('error', 'Unknown error')
+                            errors_by_symbol[symbol] = err_msg
+                            print(f"PORTFOLIO: Skipping {symbol}: {err_msg}", file=sys.stderr)
+                    
+                    except Exception as e:
+                        errors_by_symbol[symbol] = str(e)
+                        print(f"PORTFOLIO: Error for {symbol}: {e}", file=sys.stderr)
+                        continue
+                
+                if not symbol_trades:
+                    error_details = '\n'.join([f"{s}: {e}" for s, e in errors_by_symbol.items()])
+                    error_msg = f'No successful backtests for any symbol. Details:\n{error_details}'
+                    print(f"PORTFOLIO: {error_msg}", file=sys.stderr)
+                    return {'error': error_msg, 'requestId': request_id}
+                
+                if all_indices is None:
+                    all_indices = pd.date_range('2023-01-01', periods=252, freq='D')
+                
+                # Build portfolio equity curve
+                initial_capital = float(backtest_config.get('initial_capital', 10000.0))
+                ts_list, portfolio_equity, symbol_equities = build_portfolio_equity_curve(
+                    symbol_trades,
+                    weights,
+                    initial_capital,
+                    all_indices
+                )
+                
+                # Calculate portfolio metrics
+                portfolio_metrics = calculate_portfolio_metrics(
+                    portfolio_equity,
+                    symbol_trades,
+                    initial_capital,
+                    all_indices,
+                    timeframe
+                )
+                
+                # Build correlation matrix
+                correlation_matrix = build_correlation_matrix_from_trades(symbol_trades, all_indices)
+                
+                # Calculate diversification ratio
+                # Build returns DataFrame for diversification calc
+                returns_data = {}
+                for symbol, equity in symbol_equities.items():
+                    returns = [(equity[i] - equity[i-1]) / equity[i-1] if equity[i-1] else 0 
+                              for i in range(1, len(equity))]
+                    returns_data[symbol] = returns
+                
+                if returns_data:
+                    returns_df = pd.DataFrame(returns_data)
+                    div_ratio = calculate_diversification_ratio(weights, returns_df)
+                else:
+                    div_ratio = 1.0
+                
+                elapsed_ms = int((time.time() - t0) * 1000)
+                print(f"PORTFOLIO: Completed in {elapsed_ms}ms", file=sys.stderr)
+                
+                return {
+                    'portfolioMetrics': portfolio_metrics,
+                    'symbolMetrics': symbol_metrics,
+                    'weights': weights,
+                    'portfolioEquityCurve': {
+                        'timestamps': ts_list,
+                        'equity': portfolio_equity
+                    },
+                    'symbolEquityCurves': {
+                        symbol: {'timestamps': ts_list, 'equity': equity}
+                        for symbol, equity in symbol_equities.items()
+                    },
+                    'symbolTrades': symbol_trades,
+                    'correlationMatrix': correlation_matrix.to_dict() if not correlation_matrix.empty else {},
+                    'diversificationRatio': round(div_ratio, 4),
+                    'stats': {
+                        'timeMs': elapsed_ms,
+                        'symbolsCount': len(symbol_trades),
+                        'totalTrades': sum(len(trades) for trades in symbol_trades.values())
+                    },
+                    'requestId': request_id
+                }
+            
+            except Exception as e:
+                import traceback
+                print(f"PORTFOLIO: Error: {e}\n{traceback.format_exc()}", file=sys.stderr)
+                return {'error': f'run-portfolio-backtest failed: {e}', 'requestId': request_id}
+        
+        elif request.get('action') == 'run-walk-forward':
+            # Walk-Forward Analysis: Run backtests on multiple time windows
+            t0 = time.time()
+            try:
+                from backend.parameter_optimizer import split_data_for_walk_forward  # type: ignore
+                
+                data = request.get('data', {}) or {}
+                scanner_spec = data.get('scannerSpec') or {}
+                symbol = data.get('symbol')
+                backtest_config = data.get('backtestConfig') or {}
+                walk_forward_config = data.get('walkForwardConfig') or {}
+                
+                if not symbol:
+                    return {'error': 'Symbol required for walk-forward analysis', 'requestId': request_id}
+                
+                # Get walk-forward parameters
+                start_date = walk_forward_config.get('startDate', '2020-01-01')
+                end_date = walk_forward_config.get('endDate', '2023-12-31')
+                in_sample_days = walk_forward_config.get('inSampleDays', 180)
+                out_sample_days = walk_forward_config.get('outSampleDays', 60)
+                step_days = walk_forward_config.get('stepDays', 30)
+                
+                # Generate date windows
+                windows = split_data_for_walk_forward(
+                    start_date,
+                    end_date,
+                    in_sample_days,
+                    out_sample_days,
+                    step_days
+                )
+                
+                print(f"WALK-FORWARD: Generated {len(windows)} windows for {symbol}", file=sys.stderr)
+                
+                # Run backtest for each window
+                window_results = []
+                for idx, (in_start, in_end, out_start, out_end) in enumerate(windows):
+                    print(f"WALK-FORWARD: Processing window {idx + 1}/{len(windows)}", file=sys.stderr)
+                    
+                    # In-sample backtest (training)
+                    in_sample_request = {
+                        'action': 'run-backtest',
+                        'requestId': f"{request_id}_wf_{idx}_in",
+                        'data': {
+                            'scannerSpec': scanner_spec,
+                            'symbol': symbol,
+                            'backtestConfig': {
+                                **backtest_config,
+                                'start_date': in_start,
+                                'end_date': in_end
+                            },
+                            'mode': 'simulate'
+                        }
+                    }
+                    in_sample_result = handle_request(in_sample_request, db_service_override=current_db_service)
+                    
+                    # Out-of-sample backtest (testing)
+                    out_sample_request = {
+                        'action': 'run-backtest',
+                        'requestId': f"{request_id}_wf_{idx}_out",
+                        'data': {
+                            'scannerSpec': scanner_spec,
+                            'symbol': symbol,
+                            'backtestConfig': {
+                                **backtest_config,
+                                'start_date': out_start,
+                                'end_date': out_end
+                            },
+                            'mode': 'simulate'
+                        }
+                    }
+                    out_sample_result = handle_request(out_sample_request, db_service_override=current_db_service)
+                    
+                    # Collect results
+                    window_results.append({
+                        'windowIndex': idx,
+                        'inSample': {
+                            'startDate': in_start,
+                            'endDate': in_end,
+                            'metrics': in_sample_result.get('metrics', {}),
+                            'trades': len(in_sample_result.get('trades', []))
+                        },
+                        'outSample': {
+                            'startDate': out_start,
+                            'endDate': out_end,
+                            'metrics': out_sample_result.get('metrics', {}),
+                            'trades': len(out_sample_result.get('trades', []))
+                        }
+                    })
+                
+                elapsed_ms = int((time.time() - t0) * 1000)
+                
+                # Calculate aggregate statistics
+                in_sample_returns = [w['inSample']['metrics'].get('totalReturn', 0) for w in window_results]
+                out_sample_returns = [w['outSample']['metrics'].get('totalReturn', 0) for w in window_results]
+                
+                return {
+                    'symbol': symbol,
+                    'windows': window_results,
+                    'summary': {
+                        'totalWindows': len(windows),
+                        'inSample': {
+                            'avgReturn': sum(in_sample_returns) / len(in_sample_returns) if in_sample_returns else 0,
+                            'avgSharpe': sum(w['inSample']['metrics'].get('sharpeRatio', 0) for w in window_results) / len(window_results) if window_results else 0,
+                            'winRate': sum(1 for r in in_sample_returns if r > 0) / len(in_sample_returns) if in_sample_returns else 0
+                        },
+                        'outSample': {
+                            'avgReturn': sum(out_sample_returns) / len(out_sample_returns) if out_sample_returns else 0,
+                            'avgSharpe': sum(w['outSample']['metrics'].get('sharpeRatio', 0) for w in window_results) / len(window_results) if window_results else 0,
+                            'winRate': sum(1 for r in out_sample_returns if r > 0) / len(out_sample_returns) if out_sample_returns else 0
+                        }
+                    },
+                    'stats': {
+                        'timeMs': elapsed_ms
+                    },
+                    'requestId': request_id
+                }
+            
+            except Exception as e:
+                import traceback
+                print(f"WALK-FORWARD: Error: {e}\n{traceback.format_exc()}", file=sys.stderr)
+                return {'error': f'run-walk-forward failed: {e}', 'requestId': request_id}
+        
+        # Backup & Recovery Actions
+        elif action == 'create-backup':
+            try:
+                data = request.get('data', {})
+                backup_type = data.get('backupType', 'manual')
+                
+                backup_mgr = BackupManager()
+                result = backup_mgr.create_backup(backup_type=backup_type)
+                result['requestId'] = request_id
+                
+                return result
+            
+            except Exception as e:
+                import traceback
+                print(f"BACKUP: Error creating backup: {e}\n{traceback.format_exc()}", file=sys.stderr)
+                return {'error': f'create-backup failed: {e}', 'requestId': request_id}
+        
+        elif action == 'list-backups':
+            try:
+                backup_mgr = BackupManager()
+                backups = backup_mgr.list_backups()
+                
+                return {
+                    'backups': backups,
+                    'requestId': request_id
+                }
+            
+            except Exception as e:
+                import traceback
+                print(f"BACKUP: Error listing backups: {e}\n{traceback.format_exc()}", file=sys.stderr)
+                return {'error': f'list-backups failed: {e}', 'requestId': request_id}
+        
+        elif action == 'verify-backup':
+            try:
+                data = request.get('data', {})
+                backup_name = data.get('backupName')
+                
+                if not backup_name:
+                    return {'error': 'backupName required', 'requestId': request_id}
+                
+                backup_mgr = BackupManager()
+                result = backup_mgr.verify_backup(backup_name)
+                result['requestId'] = request_id
+                
+                return result
+            
+            except Exception as e:
+                import traceback
+                print(f"BACKUP: Error verifying backup: {e}\n{traceback.format_exc()}", file=sys.stderr)
+                return {'error': f'verify-backup failed: {e}', 'requestId': request_id}
+        
+        elif action == 'restore-backup':
+            try:
+                data = request.get('data', {})
+                backup_name = data.get('backupName')
+                
+                if not backup_name:
+                    return {'error': 'backupName required', 'requestId': request_id}
+                
+                backup_mgr = BackupManager()
+                result = backup_mgr.restore_backup(backup_name)
+                result['requestId'] = request_id
+                
+                return result
+            
+            except Exception as e:
+                import traceback
+                print(f"BACKUP: Error restoring backup: {e}\n{traceback.format_exc()}", file=sys.stderr)
+                return {'error': f'restore-backup failed: {e}', 'requestId': request_id}
+        
+        elif action == 'delete-backup':
+            try:
+                data = request.get('data', {})
+                backup_name = data.get('backupName')
+                
+                if not backup_name:
+                    return {'error': 'backupName required', 'requestId': request_id}
+                
+                backup_mgr = BackupManager()
+                result = backup_mgr.delete_backup(backup_name)
+                result['requestId'] = request_id
+                
+                return result
+            
+            except Exception as e:
+                import traceback
+                print(f"BACKUP: Error deleting backup: {e}\n{traceback.format_exc()}", file=sys.stderr)
+                return {'error': f'delete-backup failed: {e}', 'requestId': request_id}
+        
+        elif action == 'get-backup-stats':
+            try:
+                backup_mgr = BackupManager()
+                stats = backup_mgr.get_backup_statistics()
+                stats['requestId'] = request_id
+                
+                return stats
+            
+            except Exception as e:
+                import traceback
+                print(f"BACKUP: Error getting backup stats: {e}\n{traceback.format_exc()}", file=sys.stderr)
+                return {'error': f'get-backup-stats failed: {e}', 'requestId': request_id}
+        
+        elif action == 'check-database-integrity':
+            try:
+                data = request.get('data', {})
+                db_name = data.get('dbName', 'market_data.db')
+                
+                recovery_mgr = RecoveryManager()
+                result = recovery_mgr.check_database_integrity(db_name)
+                result['requestId'] = request_id
+                
+                return result
+            
+            except Exception as e:
+                import traceback
+                print(f"RECOVERY: Error checking integrity: {e}\n{traceback.format_exc()}", file=sys.stderr)
+                return {'error': f'check-database-integrity failed: {e}', 'requestId': request_id}
+        
+        elif action == 'check-all-databases':
+            try:
+                recovery_mgr = RecoveryManager()
+                result = recovery_mgr.check_all_databases()
+                result['requestId'] = request_id
+                
+                return result
+            
+            except Exception as e:
+                import traceback
+                print(f"RECOVERY: Error checking all databases: {e}\n{traceback.format_exc()}", file=sys.stderr)
+                return {'error': f'check-all-databases failed: {e}', 'requestId': request_id}
+        
+        elif action == 'recover-from-wal':
+            try:
+                data = request.get('data', {})
+                db_name = data.get('dbName', 'market_data.db')
+                
+                recovery_mgr = RecoveryManager()
+                result = recovery_mgr.recover_from_wal(db_name)
+                result['requestId'] = request_id
+                
+                return result
+            
+            except Exception as e:
+                import traceback
+                print(f"RECOVERY: Error recovering from WAL: {e}\n{traceback.format_exc()}", file=sys.stderr)
+                return {'error': f'recover-from-wal failed: {e}', 'requestId': request_id}
+        
+        elif action == 'export-database':
+            try:
+                data = request.get('data', {})
+                db_name = data.get('dbName', 'market_data.db')
+                export_format = data.get('format', 'sql')
+                
+                recovery_mgr = RecoveryManager()
+                result = recovery_mgr.export_database(db_name, export_format)
+                result['requestId'] = request_id
+                
+                return result
+            
+            except Exception as e:
+                import traceback
+                print(f"RECOVERY: Error exporting database: {e}\n{traceback.format_exc()}", file=sys.stderr)
+                return {'error': f'export-database failed: {e}', 'requestId': request_id}
+        
+        elif action == 'get-backup-config':
+            try:
+                backup_mgr = BackupManager()
+                config = backup_mgr.config.copy()
+                config['requestId'] = request_id
+                
+                return config
+            
+            except Exception as e:
+                import traceback
+                print(f"BACKUP: Error getting config: {e}\n{traceback.format_exc()}", file=sys.stderr)
+                return {'error': f'get-backup-config failed: {e}', 'requestId': request_id}
+        
+        elif action == 'update-backup-config':
+            try:
+                data = request.get('data', {})
+                
+                backup_mgr = BackupManager()
+                
+                # Update config
+                if 'retentionDays' in data:
+                    backup_mgr.config['retention_days'] = data['retentionDays']
+                if 'maxBackups' in data:
+                    backup_mgr.config['max_backups'] = data['maxBackups']
+                if 'autoBackupEnabled' in data:
+                    backup_mgr.config['auto_backup_enabled'] = data['autoBackupEnabled']
+                if 'backupOnStartup' in data:
+                    backup_mgr.config['backup_on_startup'] = data['backupOnStartup']
+                if 'verifyIntegrity' in data:
+                    backup_mgr.config['verify_integrity'] = data['verifyIntegrity']
+                
+                # Save config
+                backup_mgr.save_config()
+                
+                result = {
+                    'success': True,
+                    'config': backup_mgr.config,
+                    'requestId': request_id
+                }
+                
+                return result
+            
+            except Exception as e:
+                import traceback
+                print(f"BACKUP: Error updating config: {e}\n{traceback.format_exc()}", file=sys.stderr)
+                return {'error': f'update-backup-config failed: {e}', 'requestId': request_id}
+        
         else:
             return {
                 'error': 'Unknown action',

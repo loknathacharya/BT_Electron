@@ -615,6 +615,259 @@ ipcMain.handle('run-backtest', async (_event, data) => {
   }
 });
 
+// Optimize backtest parameters (Phase 6)
+ipcMain.handle('optimize-backtest', async (_event, data) => {
+  try {
+    const payload = data || {};
+    const result = await pythonService.sendToPython('optimize-backtest', payload) as any;
+    if (result?.error) {
+      throw new Error(result.error);
+    }
+    return result;
+  } catch (error) {
+    console.error('Error in optimize-backtest:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+// Portfolio backtest (Phase 8)
+ipcMain.handle('run-portfolio-backtest', async (_event, data) => {
+  try {
+    const payload = data || {};
+    const result = await pythonService.sendToPython('run-portfolio-backtest', payload) as any;
+    if (result?.error) {
+      throw new Error(result.error);
+    }
+    return result;
+  } catch (error) {
+    console.error('Error in run-portfolio-backtest:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+// Walk-forward analysis handler
+ipcMain.handle('run-walk-forward', async (_event, data) => {
+  try {
+    const payload = data || {};
+    const result = await pythonService.sendToPython('run-walk-forward', payload) as any;
+    if (result?.error) {
+      throw new Error(result.error);
+    }
+    return result;
+  } catch (error) {
+    console.error('Error in run-walk-forward:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+// Backup & Recovery Handlers
+
+// Create a backup
+ipcMain.handle('create-backup', async (_event, data) => {
+  try {
+    const payload = data || {};
+    const result = await pythonService.sendToPython('create-backup', payload) as any;
+    if (result?.error) {
+      throw new Error(result.error);
+    }
+    return result;
+  } catch (error) {
+    console.error('Error in create-backup:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+// List all backups
+ipcMain.handle('list-backups', async () => {
+  try {
+    const result = await pythonService.sendToPython('list-backups') as any;
+    if (result?.error) {
+      throw new Error(result.error);
+    }
+    return result;
+  } catch (error) {
+    console.error('Error in list-backups:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+// Verify backup integrity
+ipcMain.handle('verify-backup', async (_event, data) => {
+  try {
+    const payload = data || {};
+    const result = await pythonService.sendToPython('verify-backup', payload) as any;
+    if (result?.error) {
+      throw new Error(result.error);
+    }
+    return result;
+  } catch (error) {
+    console.error('Error in verify-backup:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+// Restore from backup
+ipcMain.handle('restore-backup', async (_event, data) => {
+  try {
+    const payload = data || {};
+    const result = await pythonService.sendToPython('restore-backup', payload) as any;
+    if (result?.error) {
+      throw new Error(result.error);
+    }
+    return result;
+  } catch (error) {
+    console.error('Error in restore-backup:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+// Delete backup
+ipcMain.handle('delete-backup', async (_event, data) => {
+  try {
+    const payload = data || {};
+    const result = await pythonService.sendToPython('delete-backup', payload) as any;
+    if (result?.error) {
+      throw new Error(result.error);
+    }
+    return result;
+  } catch (error) {
+    console.error('Error in delete-backup:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+// Get backup statistics
+ipcMain.handle('get-backup-stats', async () => {
+  try {
+    const result = await pythonService.sendToPython('get-backup-stats') as any;
+    if (result?.error) {
+      throw new Error(result.error);
+    }
+    return result;
+  } catch (error) {
+    console.error('Error in get-backup-stats:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+// Check database integrity
+ipcMain.handle('check-database-integrity', async (_event, data) => {
+  try {
+    const payload = data || {};
+    const result = await pythonService.sendToPython('check-database-integrity', payload) as any;
+    if (result?.error) {
+      throw new Error(result.error);
+    }
+    return result;
+  } catch (error) {
+    console.error('Error in check-database-integrity:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+// Check all databases
+ipcMain.handle('check-all-databases', async () => {
+  try {
+    const result = await pythonService.sendToPython('check-all-databases') as any;
+    if (result?.error) {
+      throw new Error(result.error);
+    }
+    return result;
+  } catch (error) {
+    console.error('Error in check-all-databases:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+// Recover from WAL
+ipcMain.handle('recover-from-wal', async (_event, data) => {
+  try {
+    const payload = data || {};
+    const result = await pythonService.sendToPython('recover-from-wal', payload) as any;
+    if (result?.error) {
+      throw new Error(result.error);
+    }
+    return result;
+  } catch (error) {
+    console.error('Error in recover-from-wal:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+// Export database
+ipcMain.handle('export-database', async (_event, data) => {
+  try {
+    const payload = data || {};
+    const result = await pythonService.sendToPython('export-database', payload) as any;
+    if (result?.error) {
+      throw new Error(result.error);
+    }
+    return result;
+  } catch (error) {
+    console.error('Error in export-database:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+// Get backup configuration
+ipcMain.handle('get-backup-config', async () => {
+  try {
+    const result = await pythonService.sendToPython('get-backup-config') as any;
+    if (result?.error) {
+      throw new Error(result.error);
+    }
+    return result;
+  } catch (error) {
+    console.error('Error in get-backup-config:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+// Update backup configuration
+ipcMain.handle('update-backup-config', async (_event, data) => {
+  try {
+    const payload = data || {};
+    const result = await pythonService.sendToPython('update-backup-config', payload) as any;
+    if (result?.error) {
+      throw new Error(result.error);
+    }
+    return result;
+  } catch (error) {
+    console.error('Error in update-backup-config:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
 // List all symbols in DB
 ipcMain.handle('list-symbols', async () => {
   try {
