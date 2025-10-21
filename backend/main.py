@@ -728,6 +728,51 @@ class DatabaseService:
             print(f"Error retrieving dataset '{name}': {e}", file=sys.stderr)
             return {'error': str(e)}
 
+    def delete_dataset(self, name: str) -> dict:
+        """Delete a dataset by name (removes metadata and all associated price data)"""
+        try:
+            with sqlite3.connect(self.market_db_path) as conn:
+                # First, get the dataset to verify it exists
+                cursor = conn.execute('SELECT id, name FROM datasets WHERE name = ?', (name,))
+                row = cursor.fetchone()
+                
+                if not row:
+                    return {'error': f'Dataset "{name}" not found', 'success': False}
+                
+                dataset_id = row[0]
+                dataset_name = row[1]
+                
+                # Delete all price data associated with this dataset
+                # Note: We're assuming price_data table has a reference to datasets
+                # If not, we delete all rows for symbols that were in this dataset
+                cursor = conn.execute('SELECT symbols_json FROM datasets WHERE id = ?', (dataset_id,))
+                symbols_row = cursor.fetchone()
+                
+                if symbols_row and symbols_row[0]:
+                    try:
+                        symbols = json.loads(symbols_row[0])
+                        # Delete price data for each symbol in this dataset
+                        for symbol in symbols:
+                            conn.execute('DELETE FROM price_data WHERE symbol = ?', (symbol,))
+                    except json.JSONDecodeError:
+                        pass
+                
+                # Delete the dataset metadata entry
+                conn.execute('DELETE FROM datasets WHERE id = ?', (dataset_id,))
+                conn.commit()
+                
+                print(f"Successfully deleted dataset '{dataset_name}' (ID: {dataset_id})", file=sys.stderr)
+                return {
+                    'success': True,
+                    'message': f'Dataset "{dataset_name}" and all associated data have been deleted.',
+                    'dataset_name': dataset_name
+                }
+        except Exception as e:
+            print(f"Error deleting dataset '{name}': {e}", file=sys.stderr)
+            import traceback
+            print(traceback.format_exc(), file=sys.stderr)
+            return {'error': f'Failed to delete dataset: {str(e)}', 'success': False}
+
 # Global database service instance
 db_service = DatabaseService()
 _parse_dsl_timestamps: list[float] = []
@@ -1741,6 +1786,21 @@ def handle_request(request, db_service_override=None):
                     'error': f'Failed to fetch datasets: {str(e)}',
                     'requestId': request_id
                 }
+        elif request.get('action') == 'delete-dataset':
+            """Delete a dataset by name"""
+            try:
+                data = request.get('data', {}) or {}
+                name = data.get('name')
+                if not name:
+                    return {'error': 'name is required', 'requestId': request_id}
+                result = current_db_service.delete_dataset(name)
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {
+                    'error': f'Failed to delete dataset: {str(e)}',
+                    'requestId': request_id
+                }
         elif request.get('action') == 'save-scan':
             try:
                 data = request.get('data', {}) or {}
@@ -2147,7 +2207,7 @@ def handle_request(request, db_service_override=None):
                                 float(row['High']),
                                 float(row['Low']),
                                 float(row['Close']),
-                                int(row['Volume']) if pd.notna(row['Volume']) and row['Volume'] != '' else None
+                                int(row['Volume']) if row['Volume'] is not None and row['Volume'] != '' else None
                             ))
                             
                             rows_imported += 1
@@ -4266,7 +4326,6 @@ def handle_request(request, db_service_override=None):
                 data = request.get('data', {})
                 
                 from backend.trade_analytics import TradeAnalyzer
-                import pandas as pd
                 
                 # Extract trade returns
                 trade_returns = data.get('trade_returns', [])
@@ -4429,7 +4488,6 @@ def handle_request(request, db_service_override=None):
                 data = request.get('data', {})
                 
                 from backend.trade_analytics import TradeAnalyzer
-                import pandas as pd
                 
                 # Extract trade log
                 trades = data.get('trades', [])

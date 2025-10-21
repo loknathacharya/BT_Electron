@@ -35,6 +35,12 @@ const ViewResults: React.FC = () => {
   const [chartModalSymbol, setChartModalSymbol] = useState<string | null>(null);
   const [chartModalData, setChartModalData] = useState<any[]>([]);
 
+  // New: Delete confirmation modal state
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [datasetToDelete, setDatasetToDelete] = useState<any>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [successMessage, setSuccessMessage] = useState('');
+
   // Convert date string to timestamp
   const dateToTimestamp = (dateString: string) => {
     if (!dateString) return null;
@@ -140,6 +146,60 @@ const ViewResults: React.FC = () => {
     setSelectedSymbol('ALL');
     setStartDate('');
     setEndDate('');
+  };
+
+  // Handle opening delete confirmation modal
+  const handleOpenDeleteConfirm = (dataset: any) => {
+    setDatasetToDelete(dataset);
+    setDeleteConfirmOpen(true);
+  };
+
+  // Handle confirming dataset deletion
+  const handleConfirmDelete = async () => {
+    if (!datasetToDelete || !window.electronAPI) {
+      return;
+    }
+
+    setIsDeleting(true);
+    try {
+      const result = await window.electronAPI.invoke('delete-dataset', {
+        name: datasetToDelete.name
+      });
+
+      if (result.error) {
+        throw new Error(result.error);
+      }
+
+      // Show success message
+      const deletedName = datasetToDelete.name;
+      setSuccessMessage(`✅ Dataset "${deletedName}" has been successfully deleted.`);
+      
+      // Auto-dismiss success message after 4 seconds
+      setTimeout(() => setSuccessMessage(''), 4000);
+
+      // Refresh datasets list after successful deletion
+      await fetchDatasets();
+      
+      // Clear selected dataset if it was the one deleted
+      if (selectedDataset === datasetToDelete.name) {
+        setSelectedDataset(null);
+      }
+
+      console.log('Dataset deleted successfully:', datasetToDelete.name);
+    } catch (err) {
+      console.error('Error deleting dataset:', err);
+      setError(err instanceof Error ? err.message : 'Failed to delete dataset');
+    } finally {
+      setIsDeleting(false);
+      setDeleteConfirmOpen(false);
+      setDatasetToDelete(null);
+    }
+  };
+
+  // Handle closing delete confirmation without deleting
+  const handleCancelDelete = () => {
+    setDeleteConfirmOpen(false);
+    setDatasetToDelete(null);
   };
 
   // Handle opening chart modal for a specific symbol
@@ -318,6 +378,12 @@ const ViewResults: React.FC = () => {
               </div>
             )}
 
+            {successMessage && (
+              <div className="success-message" style={{ padding: '12px', backgroundColor: '#e8f5e9', color: '#2e7d32', borderRadius: '4px', marginBottom: '15px', border: '1px solid #c8e6c9' }}>
+                {successMessage}
+              </div>
+            )}
+
             {datasetsLoading ? (
               <div className="loading-message" style={{ padding: '20px', textAlign: 'center' }}>
                 Loading datasets...
@@ -362,6 +428,23 @@ const ViewResults: React.FC = () => {
                       style={{ width: '100%', marginTop: '10px' }}
                     >
                       View Data
+                    </button>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleOpenDeleteConfirm(dataset);
+                      }}
+                      style={{ 
+                        width: '100%', 
+                        marginTop: '8px',
+                        backgroundColor: '#ffebee',
+                        color: '#d32f2f',
+                        border: '1px solid #d32f2f'
+                      }}
+                      title="Delete this dataset (cannot be undone)"
+                    >
+                      🗑️ Delete
                     </button>
                   </div>
                 ))}
@@ -868,6 +951,79 @@ const ViewResults: React.FC = () => {
             <DataAnalysis />
           </div>
         )}
+
+        {/* Delete Dataset Confirmation Modal */}
+        {deleteConfirmOpen && datasetToDelete && (
+          <div style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 1600,
+            padding: '20px'
+          }}>
+            <div style={{
+              width: 'min(500px, 100%)',
+              backgroundColor: '#fff',
+              borderRadius: '8px',
+              boxShadow: '0 10px 40px rgba(0,0,0,0.3)',
+              padding: '30px',
+              textAlign: 'center'
+            }}>
+              <div style={{ fontSize: '48px', marginBottom: '15px', color: '#d32f2f' }}>⚠️</div>
+              <h3 style={{ marginTop: 0, color: '#d32f2f', fontSize: '22px' }}>Delete Dataset?</h3>
+              <p style={{ color: '#666', marginBottom: '15px', fontSize: '15px' }}>
+                You are about to delete: <strong>{datasetToDelete.name}</strong>
+              </p>
+              <div style={{
+                backgroundColor: '#fff3e0',
+                border: '1px solid #ffb74d',
+                borderRadius: '4px',
+                padding: '12px',
+                marginBottom: '20px',
+                fontSize: '14px',
+                color: '#e65100'
+              }}>
+                <strong>⚠️ Warning:</strong> This action <strong>CANNOT be undone</strong>. All associated data ({datasetToDelete.total_rows?.toLocaleString()} rows, {datasetToDelete.symbol_count} symbols) will be permanently deleted from the database.
+              </div>
+
+              <div style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
+                <button
+                  className="btn btn-secondary"
+                  onClick={handleCancelDelete}
+                  disabled={isDeleting}
+                  style={{ 
+                    padding: '10px 24px',
+                    fontSize: '14px'
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="btn"
+                  onClick={handleConfirmDelete}
+                  disabled={isDeleting}
+                  style={{ 
+                    padding: '10px 24px',
+                    fontSize: '14px',
+                    backgroundColor: '#d32f2f',
+                    color: '#fff',
+                    border: 'none'
+                  }}
+                >
+                  {isDeleting ? '⏳ Deleting...' : '🗑️ Delete Forever'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Chart Modal */}
         {chartModalOpen && chartModalSymbol && (
           <div style={{
             position: 'fixed',

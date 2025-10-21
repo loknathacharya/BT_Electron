@@ -575,6 +575,36 @@ ipcMain.handle('create-dataset', async (_event, data) => {
   }
 });
 
+// Delete dataset handler
+ipcMain.handle('delete-dataset', async (_event, data) => {
+  try {
+    const { name } = data;
+
+    if (!name) {
+      throw new Error('No dataset name provided');
+    }
+
+    const result = await pythonService.sendToPython('delete-dataset', {
+      name
+    }) as any;
+
+    if (result.error) {
+      throw new Error(result.error);
+    }
+
+    console.log('Dataset deleted successfully:', {
+      dataset_name: name
+    });
+
+    return result;
+  } catch (error) {
+    console.error('Error in delete-dataset:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
 // Run scanner handler (Phase 0 skeleton)
 ipcMain.handle('run-scan', async (_event, data) => {
   try {
