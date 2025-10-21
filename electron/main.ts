@@ -110,7 +110,7 @@ class PythonService {
       };
 
       // Set a timeout for the request
-      const longTimeoutActions = new Set(['import-data', 'run-scan']);
+      const longTimeoutActions = new Set(['import-data', 'run-scan', 'analyze-data-quality']);
       const actionTimeoutMs = longTimeoutActions.has(action) ? 300000 : 60000; // 5 min for heavy actions
       const timeout = setTimeout(() => {
         this.pendingRequests.delete(requestId);

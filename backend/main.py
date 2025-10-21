@@ -1948,25 +1948,48 @@ def handle_request(request, db_service_override=None):
         elif request.get('action') == 'analyze-data-quality':
             try:
                 print(f"DATA-QUALITY: Starting comprehensive data quality analysis", file=sys.stderr)
+                print(f"DATA-QUALITY: Request ID: {request_id}", file=sys.stderr)
+                print(f"DATA-QUALITY: Database path: {current_db_service.market_db_path}", file=sys.stderr)
+
+                start_time = time.time()
                 analyzer = DataQualityAnalyzer(current_db_service.market_db_path)
-                
+                analyzer_time = time.time() - start_time
+                print(f"DATA-QUALITY: Analyzer initialized in {analyzer_time:.3f}s", file=sys.stderr)
+
                 # Check if specific symbols are requested
                 data = request.get('data', {}) or {}
                 symbols = data.get('symbols')
-                
+                print(f"DATA-QUALITY: Requested symbols: {symbols}", file=sys.stderr)
+
                 if symbols:
                     # Analyze specific symbols
                     if isinstance(symbols, str):
                         symbols = [symbols]
-                    results = [analyzer.analyze_symbol(sym) for sym in symbols]
+                    print(f"DATA-QUALITY: Analyzing {len(symbols)} specific symbols", file=sys.stderr)
+                    results = []
+                    for i, sym in enumerate(symbols):
+                        print(f"DATA-QUALITY: Processing symbol {i+1}/{len(symbols)}: {sym}", file=sys.stderr)
+                        sym_start = time.time()
+                        result = analyzer.analyze_symbol(sym)
+                        sym_time = time.time() - sym_start
+                        print(f"DATA-QUALITY: Symbol {sym} completed in {sym_time:.3f}s", file=sys.stderr)
+                        results.append(result)
                 else:
                     # Analyze all symbols
+                    print(f"DATA-QUALITY: Analyzing all symbols in database", file=sys.stderr)
+                    all_start = time.time()
                     results = analyzer.analyze_all_symbols()
-                
-                print(f"DATA-QUALITY: Analysis complete for {len(results)} symbols", file=sys.stderr)
+                    all_time = time.time() - all_start
+                    print(f"DATA-QUALITY: All symbols analysis completed in {all_time:.3f}s", file=sys.stderr)
+
+                total_time = time.time() - start_time
+                print(f"DATA-QUALITY: Analysis complete for {len(results)} symbols in {total_time:.3f}s", file=sys.stderr)
                 return {'success': True, 'results': results, 'requestId': request_id}
             except Exception as e:
-                print(f"DATA-QUALITY: Analysis failed: {e}", file=sys.stderr)
+                total_time = time.time() - start_time if 'start_time' in locals() else 0
+                print(f"DATA-QUALITY: Analysis failed after {total_time:.3f}s: {e}", file=sys.stderr)
+                import traceback
+                print(f"DATA-QUALITY: Traceback: {traceback.format_exc()}", file=sys.stderr)
                 return {'error': f'Data quality analysis failed: {e}', 'requestId': request_id}
         elif request.get('action') == 'parse-symbol-csv':
             try:
@@ -4554,17 +4577,22 @@ def main():
         for line in sys.stdin:
             if line.strip():
                 try:
-                    print(f"MAIN: Raw input line received: {len(line)} bytes", file=sys.stderr)
                     request = json.loads(line.strip())
-                    print(f"MAIN: Processing request with action={request.get('action')}, requestId={request.get('requestId')}", file=sys.stderr)
+                    action = request.get('action')
+
+                    # Only log input for data-quality actions to reduce noise
+                    if action == 'analyze-data-quality':
+                        print(f"MAIN: Data-quality request received: {len(line)} bytes", file=sys.stderr)
+                        print(f"MAIN: Processing data-quality request, requestId={request.get('requestId')}", file=sys.stderr)
                     response = handle_request(request)
-                    print(f"MAIN: Got response type={type(response)}, hasKeys={isinstance(response, dict)}", file=sys.stderr)
-                    if isinstance(response, dict):
-                        print(f"MAIN: Response keys={list(response.keys())}, requestId={response.get('requestId')}", file=sys.stderr)
+                    # Only log detailed response info for data-quality actions or errors
+                    if request.get('action') == 'analyze-data-quality':
+                        print(f"MAIN: Data-quality response for requestId={response.get('requestId', 'unknown')}", file=sys.stderr)
+                    elif 'error' in response:
+                        print(f"MAIN: Error response for {request.get('action', 'unknown')}: {response['error']}", file=sys.stderr)
+
                     response_json = json.dumps(response)
-                    print(f"MAIN: JSON serialization successful, length={len(response_json)} bytes", file=sys.stderr)
                     print(response_json, flush=True)
-                    print(f"MAIN: Response printed successfully to stdout", file=sys.stderr)
                 except json.JSONDecodeError as e:
                     print(f"MAIN: JSONDecodeError: {e}", file=sys.stderr)
                     print(json.dumps({'error': f'Invalid JSON: {e}'}), flush=True)

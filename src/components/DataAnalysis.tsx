@@ -7,7 +7,10 @@ interface SymbolAnalysis {
     end_date: string;
     total_records: number;
     unique_dates: number;
-    days_span: number;
+    calendar_days: number;
+    trading_days: number;
+    calendar_coverage: number;
+    trading_coverage: number;
   };
   quality_metrics?: {
     completeness_score: number;
@@ -57,11 +60,10 @@ const DataAnalysis: React.FC = () => {
   const [error, setError] = useState<string>('');
   const [selectedSymbol, setSelectedSymbol] = useState<SymbolAnalysis | null>(null);
   const [sortConfig, setSortConfig] = useState<{ key: string; order: 'asc' | 'desc' }>({ key: 'symbol', order: 'asc' });
+  const [progress, setProgress] = useState<{ progress: number; status: string; current: number; total: number } | null>(null);
 
-  // Fetch data analysis on component mount
-  useEffect(() => {
-    fetchDataAnalysis();
-  }, []);
+  // Data analysis only runs when user clicks the button
+  // Removed auto-run on component mount
 
   const fetchDataAnalysis = async () => {
     setLoading(true);
@@ -73,33 +75,74 @@ const DataAnalysis: React.FC = () => {
         return;
       }
 
+      console.log('DataAnalysis: Starting data quality analysis...');
+
+      // Listen for progress updates
+      const removeProgressListener = window.electronAPI.on('import-progress', (progressData: any) => {
+        console.log('DataAnalysis: Progress update received:', progressData);
+        setProgress({
+          progress: progressData.progress || 0,
+          status: progressData.status || 'Processing...',
+          current: progressData.current || 0,
+          total: progressData.total || 0
+        });
+      });
+
       const result = await window.electronAPI.invoke('analyze-data-quality');
 
+      // Remove progress listener
+      removeProgressListener();
+
+      // Clear progress when done
+      setProgress(null);
+
+      console.log('DataAnalysis: Analysis complete, result type:', typeof result);
+      console.log('DataAnalysis: Result keys:', result ? Object.keys(result) : 'null');
+
       if (result.error) {
+        console.error('DataAnalysis: Backend returned error:', result.error);
         setError(result.error);
         return;
       }
 
-      if (Array.isArray(result)) {
-        // Convert analysis results to table format
-        const tableData: SymbolTableRow[] = result
-          .filter((item: SymbolAnalysis) => !item.error)
-          .map((item: SymbolAnalysis) => ({
-            symbol: item.symbol,
-            startDate: item.basic_info?.start_date || 'N/A',
-            endDate: item.basic_info?.end_date || 'N/A',
-            totalRecords: item.basic_info?.total_records || 0,
-            dataPoints: `${item.basic_info?.unique_dates || 0}/${item.basic_info?.days_span || 0}`,
-            coverage: Math.round((item.basic_info?.unique_dates || 0) / Math.max(1, item.basic_info?.days_span || 1) * 100),
-            qualityScore: item.summary?.overall_score || 0,
-            qualityRating: item.summary?.quality_rating || 'Unknown',
-            missingGaps: item.missing_periods?.length || 0,
-            status: item.summary?.status || '?'
-          }));
+      if (result.results && Array.isArray(result.results)) {
+        console.log('DataAnalysis: Processing results array of length:', result.results.length);
 
+        // Convert analysis results to table format
+        const tableData: SymbolTableRow[] = result.results
+          .filter((item: SymbolAnalysis) => {
+            if (item.error) {
+              console.warn('DataAnalysis: Filtering out symbol with error:', item.symbol, item.error);
+              return false;
+            }
+            return true;
+          })
+          .map((item: SymbolAnalysis) => {
+            const coverage = item.basic_info?.trading_coverage || 0;
+            console.log(`DataAnalysis: Processed symbol ${item.symbol}: coverage=${coverage}%, quality=${item.summary?.overall_score || 0}%`);
+
+            return {
+              symbol: item.symbol,
+              startDate: item.basic_info?.start_date || 'N/A',
+              endDate: item.basic_info?.end_date || 'N/A',
+              totalRecords: item.basic_info?.total_records || 0,
+              dataPoints: `${item.basic_info?.unique_dates || 0}/${item.basic_info?.trading_days || 0}`,
+              coverage: coverage,
+              qualityScore: item.summary?.overall_score || 0,
+              qualityRating: item.summary?.quality_rating || 'Unknown',
+              missingGaps: item.missing_periods?.length || 0,
+              status: item.summary?.status || '?'
+            };
+          });
+
+        console.log('DataAnalysis: Final table data length:', tableData.length);
         setSymbols(tableData);
+      } else {
+        console.error('DataAnalysis: Unexpected result format:', result);
+        setError('Unexpected response format from backend');
       }
     } catch (err) {
+      console.error('DataAnalysis: Exception during analysis:', err);
       setError(err instanceof Error ? err.message : 'Failed to fetch data analysis');
     } finally {
       setLoading(false);
@@ -153,6 +196,7 @@ const DataAnalysis: React.FC = () => {
           <h2 style={{ marginBottom: '8px', color: '#333' }}>📊 Data Quality Analysis</h2>
           <p style={{ color: '#666', marginBottom: '16px' }}>
             Comprehensive analysis of all imported symbols including date ranges, data completeness, and quality metrics.
+            <br /><strong>Coverage %</strong> shows trading day coverage (excludes weekends and holidays).
           </p>
           <button
             onClick={fetchDataAnalysis}
@@ -167,7 +211,7 @@ const DataAnalysis: React.FC = () => {
               opacity: loading ? 0.6 : 1
             }}
           >
-            {loading ? 'Analyzing...' : '🔄 Refresh Analysis'}
+            {loading ? '⏳ Analyzing...' : '🔍 Analyze Data Quality'}
           </button>
         </div>
 
@@ -177,10 +221,46 @@ const DataAnalysis: React.FC = () => {
           </div>
         )}
 
+        {progress && (
+          <div style={{ padding: '12px 16px', backgroundColor: '#e3f2fd', borderRadius: '4px', marginBottom: '20px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+              <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#1976d2' }}>
+                {progress.status}
+              </span>
+              <span style={{ fontSize: '14px', color: '#1976d2' }}>
+                {progress.progress}%
+              </span>
+            </div>
+            <div style={{
+              width: '100%',
+              height: '8px',
+              backgroundColor: '#bbdefb',
+              borderRadius: '4px',
+              overflow: 'hidden'
+            }}>
+              <div style={{
+                width: `${progress.progress}%`,
+                height: '100%',
+                backgroundColor: '#2196f3',
+                transition: 'width 0.3s ease',
+                borderRadius: '4px'
+              }} />
+            </div>
+            <div style={{ fontSize: '12px', color: '#666', marginTop: '4px' }}>
+              {progress.current} / {progress.total} symbols processed
+            </div>
+          </div>
+        )}
+
         {symbols.length === 0 && !loading && !error && (
           <div style={{ padding: '40px', backgroundColor: 'white', borderRadius: '8px', textAlign: 'center', color: '#999' }}>
-            <p style={{ fontSize: '16px', marginBottom: '12px' }}>No data available</p>
-            <p style={{ fontSize: '13px' }}>Import data to see quality analysis</p>
+            <p style={{ fontSize: '16px', marginBottom: '12px' }}>📊 Data Quality Analysis</p>
+            <p style={{ fontSize: '13px', marginBottom: '20px' }}>
+              Click "🔄 Refresh Analysis" to analyze data quality for all imported symbols
+            </p>
+            <p style={{ fontSize: '12px', color: '#666' }}>
+              Analysis includes coverage metrics, data gaps, and quality scores
+            </p>
           </div>
         )}
 
@@ -228,7 +308,7 @@ const DataAnalysis: React.FC = () => {
                         { key: 'endDate', label: 'End Date' },
                         { key: 'totalRecords', label: 'Records' },
                         { key: 'dataPoints', label: 'Data Points' },
-                        { key: 'coverage', label: 'Coverage %' },
+                        { key: 'coverage', label: 'Trading Coverage %' },
                         { key: 'qualityScore', label: 'Quality Score' },
                         { key: 'qualityRating', label: 'Rating' },
                         { key: 'missingGaps', label: 'Gaps' },
