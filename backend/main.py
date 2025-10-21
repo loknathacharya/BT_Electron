@@ -428,6 +428,23 @@ class DatabaseService:
                     )
                 ''')
 
+                # Create symbol_lists table for managing custom symbol lists per dataset
+                conn.execute('''
+                    CREATE TABLE IF NOT EXISTS symbol_lists (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        dataset_name TEXT NOT NULL,
+                        description TEXT,
+                        symbols_json TEXT NOT NULL,
+                        symbol_count INTEGER DEFAULT 0,
+                        created_at INTEGER DEFAULT (strftime('%s', 'now')),
+                        updated_at INTEGER DEFAULT (strftime('%s', 'now')),
+                        metadata_json TEXT,
+                        UNIQUE(name, dataset_name),
+                        FOREIGN KEY (dataset_name) REFERENCES datasets (name) ON DELETE CASCADE
+                    )
+                ''')
+
                 # Verify tables were created
                 cursor = conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'")
                 table_count = cursor.fetchone()[0]
@@ -772,6 +789,347 @@ class DatabaseService:
             import traceback
             print(traceback.format_exc(), file=sys.stderr)
             return {'error': f'Failed to delete dataset: {str(e)}', 'success': False}
+
+    # Symbol List Management Methods
+    def create_symbol_list(self, name: str, dataset_name: str, symbols: list, description: str = '') -> dict:
+        """Create a new symbol list for a specific dataset"""
+        try:
+            if not name or not dataset_name:
+                return {'error': 'Symbol list name and dataset name are required', 'success': False}
+            
+            if not symbols or not isinstance(symbols, list):
+                return {'error': 'Symbols list must be a non-empty array', 'success': False}
+            
+            # Validate dataset exists
+            with sqlite3.connect(self.market_db_path) as conn:
+                cursor = conn.execute('SELECT name FROM datasets WHERE name = ?', (dataset_name,))
+                if not cursor.fetchone():
+                    return {'error': f'Dataset "{dataset_name}" not found', 'success': False}
+                
+                # Validate symbols against dataset
+                validation_result = self.validate_symbols(dataset_name, symbols)
+                if not validation_result.get('success'):
+                    return validation_result
+                
+                # Create symbol list
+                now_ts = int(time.time())
+                symbols_json = json.dumps(symbols)
+                metadata = {
+                    'valid_count': validation_result.get('valid_count', 0),
+                    'invalid_count': validation_result.get('invalid_count', 0),
+                    'created_by': 'user'
+                }
+                
+                conn.execute('''
+                    INSERT INTO symbol_lists (name, dataset_name, description, symbols_json, symbol_count, created_at, updated_at, metadata_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(name, dataset_name) DO UPDATE SET 
+                        description=excluded.description,
+                        symbols_json=excluded.symbols_json,
+                        symbol_count=excluded.symbol_count,
+                        updated_at=excluded.updated_at,
+                        metadata_json=excluded.metadata_json
+                ''', (name, dataset_name, description, symbols_json, len(symbols), now_ts, now_ts, json.dumps(metadata)))
+                
+                conn.commit()
+                
+                return {
+                    'success': True,
+                    'symbol_list': {
+                        'name': name,
+                        'dataset_name': dataset_name,
+                        'description': description,
+                        'symbols': symbols,
+                        'symbol_count': len(symbols),
+                        'created_at': now_ts,
+                        'validation': validation_result
+                    }
+                }
+        except Exception as e:
+            print(f"Error creating symbol list '{name}': {e}", file=sys.stderr)
+            import traceback
+            print(traceback.format_exc(), file=sys.stderr)
+            return {'error': f'Failed to create symbol list: {str(e)}', 'success': False}
+
+    def validate_symbols(self, dataset_name: str, symbols: list) -> dict:
+        """Validate symbols against a dataset and provide suggestions for invalid symbols"""
+        try:
+            if not symbols or not isinstance(symbols, list):
+                return {'error': 'Symbols must be a non-empty array', 'success': False}
+            
+            with sqlite3.connect(self.market_db_path) as conn:
+                # Get all symbols in the dataset
+                cursor = conn.execute('SELECT symbols_json FROM datasets WHERE name = ?', (dataset_name,))
+                row = cursor.fetchone()
+                
+                if not row:
+                    return {'error': f'Dataset "{dataset_name}" not found', 'success': False}
+                
+                try:
+                    dataset_symbols = json.loads(row[0]) if row[0] else []
+                except json.JSONDecodeError:
+                    dataset_symbols = []
+                
+                dataset_symbols_set = set(dataset_symbols)
+                
+                valid_symbols = []
+                invalid_symbols = []
+                suggestions = {}
+                
+                # Validate each symbol
+                for symbol in symbols:
+                    symbol_clean = str(symbol).strip().upper()
+                    if symbol_clean in dataset_symbols_set:
+                        valid_symbols.append(symbol_clean)
+                    else:
+                        invalid_symbols.append(symbol_clean)
+                        # Find similar symbols for suggestions (simple fuzzy match)
+                        symbol_suggestions = self._find_similar_symbols(symbol_clean, dataset_symbols)
+                        if symbol_suggestions:
+                            suggestions[symbol_clean] = symbol_suggestions
+                
+                return {
+                    'success': True,
+                    'valid_symbols': valid_symbols,
+                    'invalid_symbols': invalid_symbols,
+                    'valid_count': len(valid_symbols),
+                    'invalid_count': len(invalid_symbols),
+                    'suggestions': suggestions,
+                    'dataset_symbols': dataset_symbols
+                }
+        except Exception as e:
+            print(f"Error validating symbols: {e}", file=sys.stderr)
+            import traceback
+            print(traceback.format_exc(), file=sys.stderr)
+            return {'error': f'Failed to validate symbols: {str(e)}', 'success': False}
+
+    def _find_similar_symbols(self, target: str, candidates: list, max_suggestions: int = 3) -> list:
+        """Find similar symbols using simple string matching"""
+        try:
+            from difflib import SequenceMatcher
+            
+            similarities = []
+            for candidate in candidates:
+                ratio = SequenceMatcher(None, target.upper(), candidate.upper()).ratio()
+                if ratio > 0.6:  # Only suggest if similarity > 60%
+                    similarities.append((candidate, ratio))
+            
+            # Sort by similarity and return top suggestions
+            similarities.sort(key=lambda x: x[1], reverse=True)
+            return [s[0] for s in similarities[:max_suggestions]]
+        except Exception as e:
+            print(f"Error finding similar symbols: {e}", file=sys.stderr)
+            return []
+
+    def get_symbol_lists(self, dataset_name: str = None) -> dict:
+        """Get all symbol lists, optionally filtered by dataset"""
+        try:
+            with sqlite3.connect(self.market_db_path) as conn:
+                if dataset_name:
+                    cursor = conn.execute('''
+                        SELECT id, name, dataset_name, description, symbols_json, symbol_count, created_at, updated_at, metadata_json
+                        FROM symbol_lists
+                        WHERE dataset_name = ?
+                        ORDER BY updated_at DESC
+                    ''', (dataset_name,))
+                else:
+                    cursor = conn.execute('''
+                        SELECT id, name, dataset_name, description, symbols_json, symbol_count, created_at, updated_at, metadata_json
+                        FROM symbol_lists
+                        ORDER BY dataset_name, updated_at DESC
+                    ''')
+                
+                symbol_lists = []
+                for row in cursor.fetchall():
+                    try:
+                        symbols = json.loads(row[4]) if row[4] else []
+                        metadata = json.loads(row[8]) if row[8] else {}
+                    except json.JSONDecodeError:
+                        symbols = []
+                        metadata = {}
+                    
+                    symbol_lists.append({
+                        'id': row[0],
+                        'name': row[1],
+                        'dataset_name': row[2],
+                        'description': row[3],
+                        'symbols': symbols,
+                        'symbol_count': row[5],
+                        'created_at': row[6],
+                        'updated_at': row[7],
+                        'metadata': metadata
+                    })
+                
+                return {
+                    'success': True,
+                    'symbol_lists': symbol_lists,
+                    'count': len(symbol_lists)
+                }
+        except Exception as e:
+            print(f"Error getting symbol lists: {e}", file=sys.stderr)
+            import traceback
+            print(traceback.format_exc(), file=sys.stderr)
+            return {'error': f'Failed to get symbol lists: {str(e)}', 'success': False}
+
+    def get_symbol_list(self, name: str, dataset_name: str) -> dict:
+        """Get a specific symbol list by name and dataset"""
+        try:
+            with sqlite3.connect(self.market_db_path) as conn:
+                cursor = conn.execute('''
+                    SELECT id, name, dataset_name, description, symbols_json, symbol_count, created_at, updated_at, metadata_json
+                    FROM symbol_lists
+                    WHERE name = ? AND dataset_name = ?
+                ''', (name, dataset_name))
+                
+                row = cursor.fetchone()
+                if not row:
+                    return {'error': f'Symbol list "{name}" not found in dataset "{dataset_name}"', 'success': False}
+                
+                try:
+                    symbols = json.loads(row[4]) if row[4] else []
+                    metadata = json.loads(row[8]) if row[8] else {}
+                except json.JSONDecodeError:
+                    symbols = []
+                    metadata = {}
+                
+                return {
+                    'success': True,
+                    'symbol_list': {
+                        'id': row[0],
+                        'name': row[1],
+                        'dataset_name': row[2],
+                        'description': row[3],
+                        'symbols': symbols,
+                        'symbol_count': row[5],
+                        'created_at': row[6],
+                        'updated_at': row[7],
+                        'metadata': metadata
+                    }
+                }
+        except Exception as e:
+            print(f"Error getting symbol list: {e}", file=sys.stderr)
+            import traceback
+            print(traceback.format_exc(), file=sys.stderr)
+            return {'error': f'Failed to get symbol list: {str(e)}', 'success': False}
+
+    def update_symbol_list(self, name: str, dataset_name: str, symbols: list = None, description: str = None) -> dict:
+        """Update an existing symbol list"""
+        try:
+            with sqlite3.connect(self.market_db_path) as conn:
+                # Check if symbol list exists
+                cursor = conn.execute('SELECT id FROM symbol_lists WHERE name = ? AND dataset_name = ?', (name, dataset_name))
+                if not cursor.fetchone():
+                    return {'error': f'Symbol list "{name}" not found in dataset "{dataset_name}"', 'success': False}
+                
+                now_ts = int(time.time())
+                
+                if symbols is not None:
+                    # Validate symbols if provided
+                    validation_result = self.validate_symbols(dataset_name, symbols)
+                    if not validation_result.get('success'):
+                        return validation_result
+                    
+                    symbols_json = json.dumps(symbols)
+                    metadata = {
+                        'valid_count': validation_result.get('valid_count', 0),
+                        'invalid_count': validation_result.get('invalid_count', 0),
+                        'last_updated_by': 'user'
+                    }
+                    
+                    if description is not None:
+                        conn.execute('''
+                            UPDATE symbol_lists 
+                            SET symbols_json = ?, symbol_count = ?, description = ?, updated_at = ?, metadata_json = ?
+                            WHERE name = ? AND dataset_name = ?
+                        ''', (symbols_json, len(symbols), description, now_ts, json.dumps(metadata), name, dataset_name))
+                    else:
+                        conn.execute('''
+                            UPDATE symbol_lists 
+                            SET symbols_json = ?, symbol_count = ?, updated_at = ?, metadata_json = ?
+                            WHERE name = ? AND dataset_name = ?
+                        ''', (symbols_json, len(symbols), now_ts, json.dumps(metadata), name, dataset_name))
+                elif description is not None:
+                    conn.execute('''
+                        UPDATE symbol_lists 
+                        SET description = ?, updated_at = ?
+                        WHERE name = ? AND dataset_name = ?
+                    ''', (description, now_ts, name, dataset_name))
+                
+                conn.commit()
+                
+                return {
+                    'success': True,
+                    'message': f'Symbol list "{name}" updated successfully'
+                }
+        except Exception as e:
+            print(f"Error updating symbol list: {e}", file=sys.stderr)
+            import traceback
+            print(traceback.format_exc(), file=sys.stderr)
+            return {'error': f'Failed to update symbol list: {str(e)}', 'success': False}
+
+    def delete_symbol_list(self, name: str, dataset_name: str) -> dict:
+        """Delete a symbol list"""
+        try:
+            with sqlite3.connect(self.market_db_path) as conn:
+                # Check if symbol list exists
+                cursor = conn.execute('SELECT id FROM symbol_lists WHERE name = ? AND dataset_name = ?', (name, dataset_name))
+                row = cursor.fetchone()
+                
+                if not row:
+                    return {'error': f'Symbol list "{name}" not found in dataset "{dataset_name}"', 'success': False}
+                
+                # Delete the symbol list
+                conn.execute('DELETE FROM symbol_lists WHERE name = ? AND dataset_name = ?', (name, dataset_name))
+                conn.commit()
+                
+                return {
+                    'success': True,
+                    'message': f'Symbol list "{name}" deleted successfully'
+                }
+        except Exception as e:
+            print(f"Error deleting symbol list: {e}", file=sys.stderr)
+            import traceback
+            print(traceback.format_exc(), file=sys.stderr)
+            return {'error': f'Failed to delete symbol list: {str(e)}', 'success': False}
+
+    def import_symbol_list_from_csv(self, name: str, dataset_name: str, csv_content: str, description: str = '') -> dict:
+        """Import symbol list from CSV content"""
+        try:
+            import io
+            
+            # Parse CSV content
+            symbols = []
+            csv_file = io.StringIO(csv_content)
+            
+            for line in csv_file:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                
+                # Handle both single column and comma-separated
+                parts = [p.strip().upper() for p in line.split(',') if p.strip()]
+                symbols.extend(parts)
+            
+            if not symbols:
+                return {'error': 'No valid symbols found in CSV', 'success': False}
+            
+            # Remove duplicates while preserving order
+            seen = set()
+            unique_symbols = []
+            for symbol in symbols:
+                if symbol not in seen:
+                    seen.add(symbol)
+                    unique_symbols.append(symbol)
+            
+            # Create the symbol list
+            return self.create_symbol_list(name, dataset_name, unique_symbols, description)
+            
+        except Exception as e:
+            print(f"Error importing symbol list from CSV: {e}", file=sys.stderr)
+            import traceback
+            print(traceback.format_exc(), file=sys.stderr)
+            return {'error': f'Failed to import symbol list from CSV: {str(e)}', 'success': False}
+
 
 # Global database service instance
 db_service = DatabaseService()
@@ -1801,6 +2159,121 @@ def handle_request(request, db_service_override=None):
                     'error': f'Failed to delete dataset: {str(e)}',
                     'requestId': request_id
                 }
+        
+        # Symbol List Management Handlers
+        elif request.get('action') == 'create-symbol-list':
+            """Create a new symbol list for a dataset"""
+            try:
+                data = request.get('data', {}) or {}
+                name = data.get('name')
+                dataset_name = data.get('dataset_name')
+                symbols = data.get('symbols', [])
+                description = data.get('description', '')
+                
+                if not name or not dataset_name:
+                    return {'error': 'name and dataset_name are required', 'requestId': request_id}
+                
+                result = current_db_service.create_symbol_list(name, dataset_name, symbols, description)
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to create symbol list: {str(e)}', 'requestId': request_id}
+        
+        elif request.get('action') == 'validate-symbols':
+            """Validate symbols against a dataset"""
+            try:
+                data = request.get('data', {}) or {}
+                dataset_name = data.get('dataset_name')
+                symbols = data.get('symbols', [])
+                
+                if not dataset_name:
+                    return {'error': 'dataset_name is required', 'requestId': request_id}
+                
+                result = current_db_service.validate_symbols(dataset_name, symbols)
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to validate symbols: {str(e)}', 'requestId': request_id}
+        
+        elif request.get('action') == 'get-symbol-lists':
+            """Get symbol lists, optionally filtered by dataset"""
+            try:
+                data = request.get('data', {}) or {}
+                dataset_name = data.get('dataset_name')
+                
+                result = current_db_service.get_symbol_lists(dataset_name)
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to get symbol lists: {str(e)}', 'requestId': request_id}
+        
+        elif request.get('action') == 'get-symbol-list':
+            """Get a specific symbol list"""
+            try:
+                data = request.get('data', {}) or {}
+                name = data.get('name')
+                dataset_name = data.get('dataset_name')
+                
+                if not name or not dataset_name:
+                    return {'error': 'name and dataset_name are required', 'requestId': request_id}
+                
+                result = current_db_service.get_symbol_list(name, dataset_name)
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to get symbol list: {str(e)}', 'requestId': request_id}
+        
+        elif request.get('action') == 'update-symbol-list':
+            """Update an existing symbol list"""
+            try:
+                data = request.get('data', {}) or {}
+                name = data.get('name')
+                dataset_name = data.get('dataset_name')
+                symbols = data.get('symbols')
+                description = data.get('description')
+                
+                if not name or not dataset_name:
+                    return {'error': 'name and dataset_name are required', 'requestId': request_id}
+                
+                result = current_db_service.update_symbol_list(name, dataset_name, symbols, description)
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to update symbol list: {str(e)}', 'requestId': request_id}
+        
+        elif request.get('action') == 'delete-symbol-list':
+            """Delete a symbol list"""
+            try:
+                data = request.get('data', {}) or {}
+                name = data.get('name')
+                dataset_name = data.get('dataset_name')
+                
+                if not name or not dataset_name:
+                    return {'error': 'name and dataset_name are required', 'requestId': request_id}
+                
+                result = current_db_service.delete_symbol_list(name, dataset_name)
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to delete symbol list: {str(e)}', 'requestId': request_id}
+        
+        elif request.get('action') == 'import-symbol-list-csv':
+            """Import symbol list from CSV content"""
+            try:
+                data = request.get('data', {}) or {}
+                name = data.get('name')
+                dataset_name = data.get('dataset_name')
+                csv_content = data.get('csv_content', '')
+                description = data.get('description', '')
+                
+                if not name or not dataset_name or not csv_content:
+                    return {'error': 'name, dataset_name, and csv_content are required', 'requestId': request_id}
+                
+                result = current_db_service.import_symbol_list_from_csv(name, dataset_name, csv_content, description)
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to import symbol list from CSV: {str(e)}', 'requestId': request_id}
         elif request.get('action') == 'save-scan':
             try:
                 data = request.get('data', {}) or {}

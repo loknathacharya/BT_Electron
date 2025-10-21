@@ -605,6 +605,211 @@ ipcMain.handle('delete-dataset', async (_event, data) => {
   }
 });
 
+// Symbol List Management Handlers
+ipcMain.handle('create-symbol-list', async (_event, data) => {
+  try {
+    const { name, dataset_name, symbols, description } = data;
+
+    if (!name || !dataset_name) {
+      throw new Error('Symbol list name and dataset name are required');
+    }
+
+    const result = await pythonService.sendToPython('create-symbol-list', {
+      name,
+      dataset_name,
+      symbols: symbols || [],
+      description: description || ''
+    }) as any;
+
+    if (result.error) {
+      throw new Error(result.error);
+    }
+
+    console.log('Symbol list created successfully:', {
+      name,
+      dataset_name,
+      symbol_count: symbols?.length || 0
+    });
+
+    return result;
+  } catch (error) {
+    console.error('Error in create-symbol-list:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+ipcMain.handle('validate-symbols', async (_event, data) => {
+  try {
+    const { dataset_name, symbols } = data;
+
+    if (!dataset_name) {
+      throw new Error('Dataset name is required');
+    }
+
+    const result = await pythonService.sendToPython('validate-symbols', {
+      dataset_name,
+      symbols: symbols || []
+    }) as any;
+
+    if (result.error) {
+      throw new Error(result.error);
+    }
+
+    return result;
+  } catch (error) {
+    console.error('Error in validate-symbols:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+ipcMain.handle('get-symbol-lists', async (_event, data) => {
+  try {
+    const { dataset_name } = data || {};
+
+    const result = await pythonService.sendToPython('get-symbol-lists', {
+      dataset_name
+    }) as any;
+
+    if (result.error) {
+      throw new Error(result.error);
+    }
+
+    return result;
+  } catch (error) {
+    console.error('Error in get-symbol-lists:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+ipcMain.handle('get-symbol-list', async (_event, data) => {
+  try {
+    const { name, dataset_name } = data;
+
+    if (!name || !dataset_name) {
+      throw new Error('Symbol list name and dataset name are required');
+    }
+
+    const result = await pythonService.sendToPython('get-symbol-list', {
+      name,
+      dataset_name
+    }) as any;
+
+    if (result.error) {
+      throw new Error(result.error);
+    }
+
+    return result;
+  } catch (error) {
+    console.error('Error in get-symbol-list:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+ipcMain.handle('update-symbol-list', async (_event, data) => {
+  try {
+    const { name, dataset_name, symbols, description } = data;
+
+    if (!name || !dataset_name) {
+      throw new Error('Symbol list name and dataset name are required');
+    }
+
+    const result = await pythonService.sendToPython('update-symbol-list', {
+      name,
+      dataset_name,
+      symbols,
+      description
+    }) as any;
+
+    if (result.error) {
+      throw new Error(result.error);
+    }
+
+    console.log('Symbol list updated successfully:', {
+      name,
+      dataset_name
+    });
+
+    return result;
+  } catch (error) {
+    console.error('Error in update-symbol-list:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+ipcMain.handle('delete-symbol-list', async (_event, data) => {
+  try {
+    const { name, dataset_name } = data;
+
+    if (!name || !dataset_name) {
+      throw new Error('Symbol list name and dataset name are required');
+    }
+
+    const result = await pythonService.sendToPython('delete-symbol-list', {
+      name,
+      dataset_name
+    }) as any;
+
+    if (result.error) {
+      throw new Error(result.error);
+    }
+
+    console.log('Symbol list deleted successfully:', {
+      name,
+      dataset_name
+    });
+
+    return result;
+  } catch (error) {
+    console.error('Error in delete-symbol-list:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+ipcMain.handle('import-symbol-list-csv', async (_event, data) => {
+  try {
+    const { name, dataset_name, csv_content, description } = data;
+
+    if (!name || !dataset_name || !csv_content) {
+      throw new Error('Symbol list name, dataset name, and CSV content are required');
+    }
+
+    const result = await pythonService.sendToPython('import-symbol-list-csv', {
+      name,
+      dataset_name,
+      csv_content,
+      description: description || ''
+    }) as any;
+
+    if (result.error) {
+      throw new Error(result.error);
+    }
+
+    console.log('Symbol list imported from CSV successfully:', {
+      name,
+      dataset_name
+    });
+
+    return result;
+  } catch (error) {
+    console.error('Error in import-symbol-list-csv:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
 // Run scanner handler (Phase 0 skeleton)
 ipcMain.handle('run-scan', async (_event, data) => {
   try {

@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+﻿import React, { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import SymbolListManager from './SymbolListManager';
 import CandlestickChart from './CandlestickChart';
 import ImportData from './ImportData';
 import DataAnalysis from './DataAnalysis';
@@ -335,6 +336,14 @@ const ViewResults: React.FC = () => {
             <div className="tab-label">� Browse Datasets</div>
             <div className="tab-description">View and manage imported datasets</div>
           </button>
+          <button
+            className={`nav-button tab-with-desc ${selectedMetric === 'symbol-lists' ? 'active' : ''}`}
+            onClick={() => setSelectedMetric('symbol-lists')}
+          >
+            <div className="tab-label"> Symbol Lists</div>
+            <div className="tab-description">Manage custom symbol lists</div>
+          </button>
+
           <button
             className={`nav-button tab-with-desc ${selectedMetric === 'data-view' ? 'active' : ''}`}
             onClick={() => setSelectedMetric('data-view')}
@@ -949,6 +958,17 @@ const ViewResults: React.FC = () => {
         {selectedMetric === 'data-quality' && (
           <div className="data-quality-section">
             <DataAnalysis />
+          </div>
+        )}
+
+        {selectedMetric === 'symbol-lists' && (
+          <div className="symbol-lists-section">
+            <SymbolListManager 
+              selectedDataset={selectedDataset} 
+              onSymbolListSelected={(list) => {
+                console.log('Symbol list selected:', list);
+              }}
+            />
           </div>
         )}
 

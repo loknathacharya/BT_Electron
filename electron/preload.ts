@@ -31,7 +31,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'get-datasets',
       'get-dataset',
       'create-dataset',
-  'delete-dataset',
+      'delete-dataset',
+      // symbol lists
+      'create-symbol-list',
+      'validate-symbols',
+      'get-symbol-lists',
+      'get-symbol-list',
+      'update-symbol-list',
+      'delete-symbol-list',
+      'import-symbol-list-csv',
       // scans CRUD
       'save-scan',
       'get-scans',
