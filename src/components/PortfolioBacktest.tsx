@@ -10,6 +10,9 @@ import { RebalancingTimeline } from './RebalancingTimeline';
 import { PositionSizingSelector } from './PortfolioBacktest/PositionSizingSelector';
 import { SignalTypeSelector } from './PortfolioBacktest/SignalTypeSelector';
 import { RiskManagementControls } from './PortfolioBacktest/RiskManagementControls';
+import { MetricsLegend } from './PortfolioBacktest/MetricsLegend';
+import { QuickStatsHeader } from './PortfolioBacktest/QuickStatsHeader';
+import { TabSuggestions } from './PortfolioBacktest/TabSuggestions';
 import { TradeAnalyticsDashboard } from './TradeAnalytics/TradeAnalyticsDashboard';
 import { MonteCarloSimulation } from './MonteCarloSimulation/MonteCarloSimulation';
 import { LeverageAnalysis } from './LeverageAnalysis/LeverageAnalysis';
@@ -539,6 +542,25 @@ const PortfolioBacktest: React.FC<PortfolioBacktestProps> = ({ scannerSpec }) =>
             {/* Overview Tab */}
             {activeResultsTab === 'overview' && (
               <>
+          <div style={{display: 'flex', gap: '16px', marginBottom: '16px', alignItems: 'center'}}>
+            <h3 style={{margin: 0}}>Portfolio Overview</h3>
+            <MetricsLegend />
+          </div>
+
+          <QuickStatsHeader
+            totalReturn={results.portfolioMetrics.totalReturn}
+            sharpeRatio={results.portfolioMetrics.sharpeRatio}
+            maxDrawdown={results.portfolioMetrics.maxDrawdown}
+            totalTrades={results.portfolioMetrics.totalTrades}
+            winRate={results.portfolioMetrics.winRate}
+          />
+
+          <TabSuggestions 
+            currentTab="overview"
+            onTabChange={(tab) => setActiveResultsTab(tab as any)}
+            hasLeverageData={!!results.leverageMetrics}
+          />
+
           {/* Portfolio-Level Metrics */}
           <div className="metrics-card">
             <h4>Portfolio Metrics</h4>
@@ -546,10 +568,6 @@ const PortfolioBacktest: React.FC<PortfolioBacktestProps> = ({ scannerSpec }) =>
               <div className="metric">
                 <span className="metric-label">Total Return:</span>
                 <span className="metric-value">{formatPercent(results.portfolioMetrics.totalReturn)}</span>
-              </div>
-              <div className="metric">
-                <span className="metric-label">Annualized Return:</span>
-                <span className="metric-value">{formatPercent(results.portfolioMetrics.annualizedReturn)}</span>
               </div>
               <div className="metric">
                 <span className="metric-label">Sharpe Ratio:</span>
@@ -564,20 +582,8 @@ const PortfolioBacktest: React.FC<PortfolioBacktestProps> = ({ scannerSpec }) =>
                 <span className="metric-value">{formatPercent(results.portfolioMetrics.volatility)}</span>
               </div>
               <div className="metric">
-                <span className="metric-label">Win Rate:</span>
-                <span className="metric-value">{formatPercent(results.portfolioMetrics.winRate)}</span>
-              </div>
-              <div className="metric">
-                <span className="metric-label">Profit Factor:</span>
-                <span className="metric-value">{formatNumber(results.portfolioMetrics.profitFactor)}</span>
-              </div>
-              <div className="metric">
                 <span className="metric-label">Total Trades:</span>
                 <span className="metric-value">{results.portfolioMetrics.totalTrades}</span>
-              </div>
-              <div className="metric">
-                <span className="metric-label">Diversification Ratio:</span>
-                <span className="metric-value">{formatNumber(results.diversificationRatio)}</span>
               </div>
             </div>
           </div>
@@ -640,25 +646,6 @@ const PortfolioBacktest: React.FC<PortfolioBacktestProps> = ({ scannerSpec }) =>
             )}
           </div>
 
-          {/* Allocation Weights */}
-          <div className="weights-card">
-            <h4>Portfolio Allocation</h4>
-            <div className="weights-display">
-              {Object.entries(results.weights).map(([symbol, weight]) => (
-                <div key={symbol} className="weight-bar">
-                  <span className="weight-symbol">{symbol}</span>
-                  <div className="weight-bar-container">
-                    <div
-                      className="weight-bar-fill"
-                      style={{ width: `${weight * 100}%` }}
-                    />
-                  </div>
-                  <span className="weight-value">{formatPercent(weight)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
           {/* Per-Symbol Metrics */}
           <div className="symbol-metrics-card">
             <h4>Individual Symbol Performance</h4>
@@ -667,7 +654,6 @@ const PortfolioBacktest: React.FC<PortfolioBacktestProps> = ({ scannerSpec }) =>
                 <thead>
                   <tr>
                     <th>Symbol</th>
-                    <th>Weight</th>
                     <th>Total Return</th>
                     <th>Sharpe</th>
                     <th>Max DD</th>
@@ -678,7 +664,6 @@ const PortfolioBacktest: React.FC<PortfolioBacktestProps> = ({ scannerSpec }) =>
                   {Object.entries(results.symbolMetrics).map(([symbol, metrics]) => (
                     <tr key={symbol}>
                       <td><strong>{symbol}</strong></td>
-                      <td>{formatPercent(results.weights[symbol])}</td>
                       <td className={metrics.totalReturn >= 0 ? 'positive' : 'negative'}>
                         {formatPercent(metrics.totalReturn)}
                       </td>
@@ -692,43 +677,6 @@ const PortfolioBacktest: React.FC<PortfolioBacktestProps> = ({ scannerSpec }) =>
             </div>
           </div>
 
-          {/* Correlation Matrix */}
-          {Object.keys(results.correlationMatrix).length > 0 && (
-            <div className="correlation-card">
-              <h4>Correlation Matrix</h4>
-              <div className="correlation-matrix">
-                <table>
-                  <thead>
-                    <tr>
-                      <th></th>
-                      {Object.keys(results.correlationMatrix).map(symbol => (
-                        <th key={symbol}>{symbol}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {Object.entries(results.correlationMatrix).map(([rowSymbol, correlations]) => (
-                      <tr key={rowSymbol}>
-                        <th>{rowSymbol}</th>
-                        {Object.entries(correlations).map(([colSymbol, corr]) => (
-                          <td
-                            key={colSymbol}
-                            className={`corr-cell ${
-                              corr > 0.7 ? 'corr-high' : corr < -0.3 ? 'corr-low' : 'corr-mid'
-                            }`}
-                            title={`${rowSymbol} vs ${colSymbol}: ${formatNumber(corr, 3)}`}
-                          >
-                            {formatNumber(corr, 2)}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
           {/* Stats Footer */}
           <div className="stats-footer">
             <span>Completed in {results.stats.timeMs}ms</span>
@@ -740,16 +688,29 @@ const PortfolioBacktest: React.FC<PortfolioBacktestProps> = ({ scannerSpec }) =>
 
             {/* Invested Capital Tab */}
             {activeResultsTab === 'invested' && results.investedCapitalTimeline && (
-              <InvestedCapital
-                timeline={results.investedCapitalTimeline}
-                initialCapital={backtestConfig.initial_capital}
-              />
+              <>
+                <TabSuggestions 
+                  currentTab="invested"
+                  onTabChange={(tab) => setActiveResultsTab(tab as any)}
+                  hasLeverageData={!!results.leverageMetrics}
+                />
+                <InvestedCapital
+                  timeline={results.investedCapitalTimeline}
+                  initialCapital={backtestConfig.initial_capital}
+                />
+              </>
             )}
 
             {/* Trades Tab */}
             {activeResultsTab === 'trades' && (
-              <div className="trades-section">
-                <h4>Trade Log</h4>
+              <>
+                <TabSuggestions 
+                  currentTab="trades"
+                  onTabChange={(tab) => setActiveResultsTab(tab as any)}
+                  hasLeverageData={!!results.leverageMetrics}
+                />
+                <div className="trades-section">
+                  <h4>Trade Log</h4>
                 <div className="trades-table-wrapper">
                   <table className="trades-table">
                     <thead>
@@ -789,51 +750,80 @@ const PortfolioBacktest: React.FC<PortfolioBacktestProps> = ({ scannerSpec }) =>
                   </table>
                 </div>
               </div>
+              </>
             )}
 
             {/* Trade Analytics Tab */}
             {activeResultsTab === 'analytics' && results.tradeAnalytics && (
-              <TradeAnalyticsDashboard
-                analytics={results.tradeAnalytics}
-                trades={Object.values(results.symbolTrades).flat()}
-              />
+              <>
+                <TabSuggestions 
+                  currentTab="analytics"
+                  onTabChange={(tab) => setActiveResultsTab(tab as any)}
+                  hasLeverageData={!!results.leverageMetrics}
+                />
+                <TradeAnalyticsDashboard
+                  analytics={results.tradeAnalytics}
+                  trades={Object.values(results.symbolTrades).flat()}
+                />
+              </>
             )}
 
             {/* Monte Carlo Tab */}
             {activeResultsTab === 'monte-carlo' && (
-              <MonteCarloSimulation
-                trades={Object.values(results.symbolTrades).flat()}
-                initialCapital={backtestConfig.initial_capital}
-                onRunSimulation={async (numSims, numTrades) => {
-                  const response = await window.electronAPI.invoke('run-monte-carlo', {
-                    trade_returns: Object.values(results.symbolTrades).flat().map((t: any) => t.pl_pct),
-                    n_simulations: numSims,
-                    n_trades: numTrades
-                  });
-                  return response;
-                }}
-              />
+              <>
+                <TabSuggestions 
+                  currentTab="monte-carlo"
+                  onTabChange={(tab) => setActiveResultsTab(tab as any)}
+                  hasLeverageData={!!results.leverageMetrics}
+                />
+                <MonteCarloSimulation
+                  trades={Object.values(results.symbolTrades).flat()}
+                  initialCapital={backtestConfig.initial_capital}
+                  onRunSimulation={async (numSims, numTrades) => {
+                    const response = await window.electronAPI.invoke('run-monte-carlo', {
+                      trade_returns: Object.values(results.symbolTrades).flat().map((t: any) => t.pl_pct),
+                      n_simulations: numSims,
+                      n_trades: numTrades
+                    });
+                    return response;
+                  }}
+                />
+              </>
             )}
 
             {/* Leverage Analysis Tab */}
             {activeResultsTab === 'leverage' && results.leverageMetrics && (
-              <LeverageAnalysis
-                metrics={results.leverageMetrics}
-                leverageTimeline={results.leverageTimeline || []}
-                leverageVsPerformance={results.leverageVsPerformance || []}
-              />
+              <>
+                <TabSuggestions 
+                  currentTab="leverage"
+                  onTabChange={(tab) => setActiveResultsTab(tab as any)}
+                  hasLeverageData={!!results.leverageMetrics}
+                />
+                <LeverageAnalysis
+                  metrics={results.leverageMetrics}
+                  leverageTimeline={results.leverageTimeline || []}
+                  leverageVsPerformance={results.leverageVsPerformance || []}
+                />
+              </>
             )}
 
             {/* Parameter Optimization Tab */}
             {activeResultsTab === 'optimization' && (
-              <ParameterOptimization
-                scannerSpec={scannerSpec}
-                symbols={symbols.filter(s => s.trim())}
-                baseConfig={backtestConfig}
-                onOptimizationComplete={(results) => {
-                  console.log('Optimization complete:', results);
-                }}
-              />
+              <>
+                <TabSuggestions 
+                  currentTab="optimization"
+                  onTabChange={(tab) => setActiveResultsTab(tab as any)}
+                  hasLeverageData={!!results.leverageMetrics}
+                />
+                <ParameterOptimization
+                  scannerSpec={scannerSpec}
+                  symbols={symbols.filter(s => s.trim())}
+                  baseConfig={backtestConfig}
+                  onOptimizationComplete={(results) => {
+                    console.log('Optimization complete:', results);
+                  }}
+                />
+              </>
             )}
           </div>
         </div>
