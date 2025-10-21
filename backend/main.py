@@ -2180,16 +2180,57 @@ def handle_request(request, db_service_override=None):
                 return {'error': f'Failed to create symbol list: {str(e)}', 'requestId': request_id}
         
         elif request.get('action') == 'validate-symbols':
-            """Validate symbols against a dataset"""
+            """Validate symbols, optionally scoped to a dataset"""
             try:
                 data = request.get('data', {}) or {}
                 dataset_name = data.get('dataset_name')
-                symbols = data.get('symbols', [])
-                
-                if not dataset_name:
-                    return {'error': 'dataset_name is required', 'requestId': request_id}
-                
-                result = current_db_service.validate_symbols(dataset_name, symbols)
+                symbols = data.get('symbols') or []
+
+                # Normalize symbols input to a list of stripped strings
+                if isinstance(symbols, str):
+                    symbols = [symbols]
+                if not isinstance(symbols, list):
+                    return {
+                        'error': 'symbols must be provided as a list or string',
+                        'requestId': request_id
+                    }
+
+                normalized_symbols = [str(sym).strip() for sym in symbols if str(sym).strip()]
+                if not normalized_symbols:
+                    return {
+                        'error': 'No symbols provided for validation',
+                        'requestId': request_id
+                    }
+
+                if dataset_name:
+                    result = current_db_service.validate_symbols(dataset_name, normalized_symbols)
+                else:
+                    all_symbols = set(current_db_service.list_symbols())
+                    valid_symbols = []
+                    invalid_symbols = []
+
+                    for sym in normalized_symbols:
+                        sym_upper = sym.upper()
+                        if sym_upper in all_symbols:
+                            valid_symbols.append(sym_upper)
+                        else:
+                            invalid_symbols.append(sym_upper)
+
+                    result = {
+                        'success': True,
+                        'valid_symbols': valid_symbols,
+                        'invalid_symbols': invalid_symbols,
+                        'valid_count': len(valid_symbols),
+                        'invalid_count': len(invalid_symbols),
+                        'suggestions': {}
+                    }
+
+                # Backwards compatibility: provide legacy keys used by older UI
+                if 'valid' not in result and 'valid_symbols' in result:
+                    result['valid'] = result.get('valid_symbols', [])
+                if 'invalid' not in result and 'invalid_symbols' in result:
+                    result['invalid'] = result.get('invalid_symbols', [])
+
                 result['requestId'] = request_id
                 return result
             except Exception as e:
@@ -2274,6 +2315,16 @@ def handle_request(request, db_service_override=None):
                 return result
             except Exception as e:
                 return {'error': f'Failed to import symbol list from CSV: {str(e)}', 'requestId': request_id}
+        
+        elif request.get('action') == 'get-all-datasets':
+            """Get all available datasets"""
+            try:
+                result = current_db_service.get_all_datasets()
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to get datasets: {str(e)}', 'requestId': request_id}
+        
         elif request.get('action') == 'save-scan':
             try:
                 data = request.get('data', {}) or {}
@@ -2404,20 +2455,6 @@ def handle_request(request, db_service_override=None):
                 return {'success': True, 'symbols': syms, 'count': len(syms), 'requestId': request_id}
             except Exception as e:
                 return {'error': f'Failed to list symbols: {e}', 'requestId': request_id}
-        elif request.get('action') == 'validate-symbols':
-            try:
-                data = request.get('data', {}) or {}
-                symbols = data.get('symbols') or []
-                if isinstance(symbols, str):
-                    symbols = [symbols]
-                if not isinstance(symbols, list):
-                    return {'error': 'symbols must be a list or string', 'requestId': request_id}
-                all_syms = set(current_db_service.list_symbols())
-                valid = [s for s in symbols if s in all_syms]
-                invalid = [s for s in symbols if s not in all_syms]
-                return {'success': True, 'valid': valid, 'invalid': invalid, 'requestId': request_id}
-            except Exception as e:
-                return {'error': f'Failed to validate symbols: {e}', 'requestId': request_id}
         elif request.get('action') == 'analyze-data-quality':
             try:
                 print(f"DATA-QUALITY: Starting comprehensive data quality analysis", file=sys.stderr)

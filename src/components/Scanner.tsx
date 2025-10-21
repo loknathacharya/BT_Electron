@@ -3,6 +3,7 @@ import CandlestickChart from './CandlestickChart';
 import { useNavigate } from 'react-router-dom';
 import ScannerBuilder from './ScannerBuilder';
 import { BuilderTree, treeToFilters } from './scannerBuilderModel';
+import { useSymbolLists } from '../hooks/useSymbolLists';
 
 type AttrName = 'open' | 'high' | 'low' | 'close' | 'volume';
 
@@ -90,7 +91,7 @@ const toMeasureNode = (side: 'left' | 'right', f: any) => {
 
 const Scanner: React.FC = () => {
   const [timeframe, setTimeframe] = useState<'1D' | '1h' | '15m' | '5m'>('1D');
-  const [universeMode, setUniverseMode] = useState<'ALL' | 'LIST'>('ALL');
+  const [universeMode, setUniverseMode] = useState<'ALL' | 'LIST' | 'SAVED_LIST'>('ALL');
   const [universeList, setUniverseList] = useState<string>('');
   const [validationStatus, setValidationStatus] = useState<string>('');
   const [saveListName, setSaveListName] = useState<string>('');
@@ -103,6 +104,13 @@ const Scanner: React.FC = () => {
   const [showJson, setShowJson] = useState(false);
   const [maxSymbols, setMaxSymbols] = useState<number>(0);
   const [scanProgress, setScanProgress] = useState<{phase: 'start'|'running'|'done'; scanned?: number; totalSymbols?: number} | null>(null);
+  
+  // Symbol list state
+  const [selectedDataset, setSelectedDataset] = useState<string | null>(null);
+  const [selectedSavedList, setSelectedSavedList] = useState<string>('');
+  const [datasets, setDatasets] = useState<any[]>([]);
+  const [datasetsLoading, setDatasetsLoading] = useState(false);
+  const { symbolLists, loading: listsLoading } = useSymbolLists(selectedDataset);
   
   // Phase 4: Sorting and pagination state
   const [sortBy, setSortBy] = useState<'symbol' | 'timestamp'>('symbol');
@@ -123,14 +131,32 @@ const Scanner: React.FC = () => {
   const dslCacheRef = React.useRef<Map<string, any>>(new Map());
   const dslKey = useMemo(() => {
     if (!useDsl || !dslText) return '';
-    const uni = universeMode === 'ALL' ? 'ALL' : universeList;
-    return `${dslText}::${timeframe}::${uni}`;
-  }, [useDsl, dslText, timeframe, universeMode, universeList]);
+    let uni: any = 'ALL';
+    if (universeMode === 'ALL') {
+      uni = 'ALL';
+    } else if (universeMode === 'LIST') {
+      uni = universeList;
+    } else if (universeMode === 'SAVED_LIST' && selectedSavedList) {
+      const list = symbolLists.find(l => l.name === selectedSavedList);
+      uni = list ? list.symbols : 'ALL';
+    }
+    return `${dslText}::${timeframe}::${JSON.stringify(uni)}`;
+  }, [useDsl, dslText, timeframe, universeMode, universeList, selectedSavedList, symbolLists]);
 
   const scannerSpec = useMemo(() => {
+    let uni: any = 'ALL';
+    if (universeMode === 'ALL') {
+      uni = 'ALL';
+    } else if (universeMode === 'LIST') {
+      uni = universeList.split(',').map(s => s.trim()).filter(Boolean);
+    } else if (universeMode === 'SAVED_LIST' && selectedSavedList) {
+      const list = symbolLists.find(l => l.name === selectedSavedList);
+      uni = list ? list.symbols : 'ALL';
+    }
+
     const spec: any = {
       timeframe,
-      universe: universeMode === 'ALL' ? 'ALL' : universeList.split(',').map(s => s.trim()).filter(Boolean),
+      universe: uni,
       filters: useBuilder && builderTree ? treeToFilters(builderTree) : filters.map(f => {
         if (f.op === 'compare') {
           return {
@@ -150,7 +176,7 @@ const Scanner: React.FC = () => {
       })
     };
     return spec;
-  }, [timeframe, universeMode, universeList, filters, useBuilder, builderTree]);
+  }, [timeframe, universeMode, universeList, selectedSavedList, symbolLists, filters, useBuilder, builderTree]);
 
   const runScan = async () => {
     try {
@@ -237,6 +263,25 @@ const Scanner: React.FC = () => {
     return () => { try { off && off(); } catch { /* ignore */ } };
   }, []);
 
+  // Fetch available datasets
+  useEffect(() => {
+    const fetchDatasets = async () => {
+      setDatasetsLoading(true);
+      try {
+        const result = await window.electronAPI.invoke('get-all-datasets', {});
+        if (!result.error) {
+          setDatasets(result.datasets || []);
+        }
+      } catch (err) {
+        console.error('Error fetching datasets:', err);
+      } finally {
+        setDatasetsLoading(false);
+      }
+    };
+
+    fetchDatasets();
+  }, []);
+
   const openPreview = async (symbol: string) => {
     setPreviewSymbol(symbol);
     setPreviewOpen(true);
@@ -287,9 +332,10 @@ const Scanner: React.FC = () => {
             </div>
             <div>
               <label>Universe</label>
-              <select value={universeMode} onChange={(e) => setUniverseMode(e.target.value as 'ALL' | 'LIST')} style={{ width: '100%' }}>
+              <select value={universeMode} onChange={(e) => setUniverseMode(e.target.value as 'ALL' | 'LIST' | 'SAVED_LIST')} style={{ width: '100%' }}>
                 <option value="ALL">All symbols</option>
-                <option value="LIST">Symbol list</option>
+                <option value="LIST">Manual list</option>
+                <option value="SAVED_LIST">Saved list</option>
               </select>
             </div>
             <div>
@@ -306,6 +352,50 @@ const Scanner: React.FC = () => {
               <label>Date To</label>
               <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} style={{ width: '100%' }} />
             </div>
+            {universeMode === 'SAVED_LIST' && (
+              <>
+                <div style={{ gridColumn: '1 / span 2' }}>
+                  <label>Dataset</label>
+                  <select
+                    value={selectedDataset || ''}
+                    onChange={(e) => {
+                      setSelectedDataset(e.target.value);
+                      setSelectedSavedList('');
+                    }}
+                    disabled={datasetsLoading}
+                    style={{ width: '100%', marginBottom: 8 }}
+                  >
+                    <option value="">-- Select Dataset --</option>
+                    {datasets.map(ds => (
+                      <option key={ds.name} value={ds.name}>
+                        {ds.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ gridColumn: '1 / span 2' }}>
+                  <label>Saved Symbol List</label>
+                  <select
+                    value={selectedSavedList}
+                    onChange={(e) => setSelectedSavedList(e.target.value)}
+                    disabled={!selectedDataset || listsLoading}
+                    style={{ width: '100%', marginBottom: 8 }}
+                  >
+                    <option value="">-- Select List --</option>
+                    {symbolLists.map(list => (
+                      <option key={list.id} value={list.name}>
+                        {list.name} ({list.symbol_count} symbols)
+                      </option>
+                    ))}
+                  </select>
+                  {selectedSavedList && symbolLists.find(l => l.name === selectedSavedList)?.description && (
+                    <div style={{ fontSize: '12px', color: '#666', marginTop: '4px' }}>
+                      {symbolLists.find(l => l.name === selectedSavedList)?.description}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
             {universeMode === 'LIST' && (
               <div style={{ gridColumn: '1 / span 2' }}>
                 <label>Symbols (comma separated)</label>

@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       // datasets
       'get-datasets',
       'get-dataset',
+      'get-all-datasets',
       'create-dataset',
       'delete-dataset',
       // symbol lists

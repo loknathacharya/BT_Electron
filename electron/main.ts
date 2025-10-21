@@ -640,21 +640,39 @@ ipcMain.handle('create-symbol-list', async (_event, data) => {
   }
 });
 
+ipcMain.removeHandler('validate-symbols');
 ipcMain.handle('validate-symbols', async (_event, data) => {
   try {
-    const { dataset_name, symbols } = data;
+    const { dataset_name, symbols } = data || {};
 
-    if (!dataset_name) {
-      throw new Error('Dataset name is required');
+    const payload: Record<string, any> = {};
+
+    if (dataset_name) {
+      payload.dataset_name = dataset_name;
     }
 
-    const result = await pythonService.sendToPython('validate-symbols', {
-      dataset_name,
-      symbols: symbols || []
-    }) as any;
+    if (Array.isArray(symbols)) {
+      payload.symbols = symbols;
+    } else if (typeof symbols === 'string') {
+      payload.symbols = [symbols];
+    } else if (symbols == null) {
+      payload.symbols = [];
+    } else {
+      throw new Error('symbols must be a string or an array');
+    }
+
+    const result = await pythonService.sendToPython('validate-symbols', payload) as any;
 
     if (result.error) {
       throw new Error(result.error);
+    }
+
+    // Backwards compatibility for legacy callers
+    if (result.valid_symbols && !result.valid) {
+      result.valid = result.valid_symbols;
+    }
+    if (result.invalid_symbols && !result.invalid) {
+      result.invalid = result.invalid_symbols;
     }
 
     return result;
@@ -804,6 +822,26 @@ ipcMain.handle('import-symbol-list-csv', async (_event, data) => {
     return result;
   } catch (error) {
     console.error('Error in import-symbol-list-csv:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});
+
+// Get all datasets handler
+ipcMain.handle('get-all-datasets', async (_event) => {
+  try {
+    const result = await pythonService.sendToPython('get-all-datasets', {}) as any;
+
+    if (result.error) {
+      throw new Error(result.error);
+    }
+
+    console.log('Retrieved all datasets:', result.datasets ? result.datasets.length : 0);
+
+    return result;
+  } catch (error) {
+    console.error('Error in get-all-datasets:', error);
     return {
       error: error instanceof Error ? error.message : String(error)
     };
@@ -1111,19 +1149,6 @@ ipcMain.handle('list-symbols', async () => {
     return result;
   } catch (error) {
     console.error('Error in list-symbols:', error);
-    return { error: error instanceof Error ? error.message : String(error) };
-  }
-});
-
-// Validate one or more symbols exist in DB
-ipcMain.handle('validate-symbols', async (_event, data) => {
-  try {
-    const { symbols } = data || {};
-    const result = await pythonService.sendToPython('validate-symbols', { symbols }) as any;
-    if (result.error) throw new Error(result.error);
-    return result;
-  } catch (error) {
-    console.error('Error in validate-symbols:', error);
     return { error: error instanceof Error ? error.message : String(error) };
   }
 });
