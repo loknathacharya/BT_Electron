@@ -15,9 +15,8 @@ function Navigation() {
   const location = useLocation();
 
   const navItems = [
-    { path: '/', label: 'Import Data' },
+    { path: '/', label: 'Data Management' },
     { path: '/scanner', label: 'Scanner' },
-    { path: '/data-management', label: 'Data Management' },
     { path: '/backtest', label: 'Backtest' },
     { path: '/portfolio', label: 'Portfolio' },
     { path: '/walk-forward', label: 'Walk-Forward' },
@@ -52,10 +51,13 @@ function AppContent() {
       <Breadcrumbs />
       <main className="main-content">
         <Routes>
-          {/* Import Data as home page */}
-          <Route path="/" element={<ImportData />} />
+            {/* Data Management as home page */}
+            <Route path="/" element={<ViewResults />} />
+            {/* Keep a route for the legacy /data-management path to avoid breaking internal links */}
+            <Route path="/data-management" element={<ViewResults />} />
+            {/* Import Data modal route — ViewResults handles showing modal based on location.pathname */}
+            <Route path="/import" element={<ViewResults />} />
           <Route path="/scanner" element={<Scanner />} />
-          <Route path="/data-management" element={<ViewResults />} />
           <Route path="/backtest" element={<BacktestEngine />} />
           <Route path="/portfolio" element={<PortfolioBacktest scannerSpec={{}} />} />
           <Route path="/walk-forward" element={<WalkForwardAnalysis scannerSpec={{}} />} />

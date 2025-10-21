@@ -1022,3 +1022,20 @@ ipcMain.handle('parse-dsl', async (_event, data) => {
     return { error: error instanceof Error ? error.message : String(error) };
   }
 });
+
+// Analyze data quality
+ipcMain.handle('analyze-data-quality', async (_event, data) => {
+  try {
+    const payload = data || {};
+    const result = await pythonService.sendToPython('analyze-data-quality', payload) as any;
+    if (result?.error) {
+      throw new Error(result.error);
+    }
+    return result;
+  } catch (error) {
+    console.error('Error in analyze-data-quality:', error);
+    return {
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+});

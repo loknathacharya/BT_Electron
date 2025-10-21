@@ -476,6 +476,134 @@ const ImportData: React.FC = () => {
                 </div>
               )}
             </div>
+
+            {/* Data Quality Summary */}
+            {importSummary.dataQuality && (
+              <div style={{ marginTop: '20px', padding: '15px', backgroundColor: '#f0f4f8', borderRadius: '5px', borderLeft: '4px solid #2196F3' }}>
+                <h4 style={{ marginTop: 0, marginBottom: '12px', color: '#1565c0' }}>
+                  📊 Data Quality Analysis
+                </h4>
+                
+                {/* Basic Info */}
+                <div style={{ marginBottom: '15px', padding: '10px', backgroundColor: 'white', borderRadius: '4px' }}>
+                  <strong style={{ color: '#333' }}>Data Coverage</strong>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px', marginTop: '8px', fontSize: '13px' }}>
+                    <div>
+                      <span style={{ color: '#666' }}>Start Date:</span>
+                      <div style={{ fontWeight: 600, color: '#333' }}>
+                        {importSummary.dataQuality.basic_info?.start_date}
+                      </div>
+                    </div>
+                    <div>
+                      <span style={{ color: '#666' }}>End Date:</span>
+                      <div style={{ fontWeight: 600, color: '#333' }}>
+                        {importSummary.dataQuality.basic_info?.end_date}
+                      </div>
+                    </div>
+                    <div>
+                      <span style={{ color: '#666' }}>Total Records:</span>
+                      <div style={{ fontWeight: 600, color: '#333' }}>
+                        {importSummary.dataQuality.basic_info?.total_records}
+                      </div>
+                    </div>
+                    <div>
+                      <span style={{ color: '#666' }}>Records with Data:</span>
+                      <div style={{ fontWeight: 600, color: '#333' }}>
+                        {importSummary.dataQuality.basic_info?.unique_dates} / {importSummary.dataQuality.basic_info?.days_span} days
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Quality Metrics */}
+                <div style={{ marginBottom: '15px', padding: '10px', backgroundColor: 'white', borderRadius: '4px' }}>
+                  <strong style={{ color: '#333' }}>Quality Metrics</strong>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px', marginTop: '8px', fontSize: '13px' }}>
+                    <div>
+                      <span style={{ color: '#666' }}>Completeness:</span>
+                      <div style={{ fontWeight: 600, color: '#4CAF50' }}>
+                        {importSummary.dataQuality.quality_metrics?.completeness_score}%
+                      </div>
+                    </div>
+                    <div>
+                      <span style={{ color: '#666' }}>Data Integrity:</span>
+                      <div style={{ fontWeight: 600, color: '#4CAF50' }}>
+                        {importSummary.dataQuality.quality_metrics?.integrity_score}%
+                      </div>
+                    </div>
+                    <div>
+                      <span style={{ color: '#666' }}>Overall Score:</span>
+                      <div style={{ fontWeight: 600, color: importSummary.dataQuality.summary?.overall_score >= 85 ? '#4CAF50' : '#FF9800' }}>
+                        {importSummary.dataQuality.summary?.overall_score}% - {importSummary.dataQuality.summary?.quality_rating}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Missing Periods */}
+                {importSummary.dataQuality.missing_periods && importSummary.dataQuality.missing_periods.length > 0 && (
+                  <div style={{ marginBottom: '15px', padding: '10px', backgroundColor: '#fff3e0', borderRadius: '4px', borderLeft: '3px solid #FF9800' }}>
+                    <strong style={{ color: '#E65100' }}>⚠️ Missing Data Periods ({importSummary.dataQuality.missing_periods.length})</strong>
+                    <div style={{ marginTop: '8px', maxHeight: '150px', overflowY: 'auto', fontSize: '12px' }}>
+                      {importSummary.dataQuality.missing_periods.map((gap: any, idx: number) => (
+                        <div key={idx} style={{ marginBottom: '6px', paddingBottom: '6px', borderBottom: '1px solid #ffe0b2' }}>
+                          <div style={{ color: '#333', fontWeight: 500 }}>
+                            {gap.gap_start_date} to {gap.gap_end_date} ({gap.gap_days} days)
+                          </div>
+                          {importSummary.dataQuality.comparable_symbols?.comparable_gaps && (
+                            <div style={{ color: '#666', fontSize: '11px', marginTop: '2px' }}>
+                              Last data: {gap.date_before} | Resume: {gap.date_after}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Alternative Symbols for Missing Periods */}
+                {importSummary.dataQuality.comparable_symbols?.comparable_gaps && 
+                 importSummary.dataQuality.comparable_symbols.comparable_gaps.length > 0 && (
+                  <div style={{ marginBottom: '15px', padding: '10px', backgroundColor: '#e8f5e9', borderRadius: '4px', borderLeft: '3px solid #4CAF50' }}>
+                    <strong style={{ color: '#1B5E20' }}>✓ Alternative Symbols Available</strong>
+                    <div style={{ marginTop: '8px', fontSize: '12px' }}>
+                      {importSummary.dataQuality.comparable_symbols.comparable_gaps.map((gap: any, gapIdx: number) => (
+                        <div key={gapIdx} style={{ marginBottom: '8px', paddingBottom: '8px', borderBottom: '1px solid #c8e6c9' }}>
+                          <div style={{ color: '#333', fontWeight: 500, marginBottom: '4px' }}>
+                            Gap: {gap.gap_period.start} to {gap.gap_period.end} ({gap.gap_period.duration_days} days)
+                          </div>
+                          <div style={{ color: '#666' }}>
+                            {gap.alternative_symbols.slice(0, 3).map((alt: any, idx: number) => (
+                              <div key={idx} style={{ marginLeft: '8px', fontSize: '11px' }}>
+                                • <strong>{alt.symbol}</strong>: {alt.records_available} records available
+                              </div>
+                            ))}
+                            {gap.alternative_symbols.length > 3 && (
+                              <div style={{ marginLeft: '8px', fontSize: '11px', color: '#999' }}>
+                                +{gap.alternative_symbols.length - 3} more symbols
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Summary and Recommendation */}
+                <div style={{ padding: '10px', backgroundColor: 'white', borderRadius: '4px', borderLeft: '3px solid #2196F3' }}>
+                  <div style={{ fontSize: '13px', color: '#333' }}>
+                    <strong>Coverage:</strong> {importSummary.dataQuality.summary?.data_coverage}
+                    <span style={{ marginLeft: '12px' }}>
+                      <strong>Coverage %:</strong> {importSummary.dataQuality.summary?.coverage_percentage}%
+                    </span>
+                  </div>
+                  <div style={{ marginTop: '8px', fontSize: '13px', color: '#555', fontStyle: 'italic' }}>
+                    {importSummary.dataQuality.summary?.recommendation}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

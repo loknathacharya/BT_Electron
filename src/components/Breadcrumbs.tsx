@@ -18,9 +18,10 @@ const Breadcrumbs: React.FC<BreadcrumbsProps> = ({ items }) => {
 
   // Map of routes to breadcrumb labels
   const routeLabels: { [key: string]: string } = {
-    '/': '📥 Import Data',
+    '/': '� Data Management',
     '/scanner': '🔍 Scanner',
     '/data-management': '📊 Data Management',
+    '/import': '📥 Import Data',
     '/backtest': '📈 Backtest',
     '/portfolio': '💼 Portfolio',
     '/walk-forward': '🔄 Walk-Forward',

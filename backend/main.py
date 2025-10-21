@@ -20,8 +20,10 @@ import re
 # Import backup and recovery managers
 try:
     from backend.backup_manager import BackupManager, RecoveryManager
+    from backend.data_quality_analyzer import DataQualityAnalyzer
 except ImportError:
     from backup_manager import BackupManager, RecoveryManager
+    from data_quality_analyzer import DataQualityAnalyzer
 
 # Ensure repository root is on sys.path so 'backend.*' absolute imports work when running this file directly
 try:
@@ -1883,6 +1885,29 @@ def handle_request(request, db_service_override=None):
                 return {'success': True, 'valid': valid, 'invalid': invalid, 'requestId': request_id}
             except Exception as e:
                 return {'error': f'Failed to validate symbols: {e}', 'requestId': request_id}
+        elif request.get('action') == 'analyze-data-quality':
+            try:
+                print(f"DATA-QUALITY: Starting comprehensive data quality analysis", file=sys.stderr)
+                analyzer = DataQualityAnalyzer(current_db_service.market_db_path)
+                
+                # Check if specific symbols are requested
+                data = request.get('data', {}) or {}
+                symbols = data.get('symbols')
+                
+                if symbols:
+                    # Analyze specific symbols
+                    if isinstance(symbols, str):
+                        symbols = [symbols]
+                    results = [analyzer.analyze_symbol(sym) for sym in symbols]
+                else:
+                    # Analyze all symbols
+                    results = analyzer.analyze_all_symbols()
+                
+                print(f"DATA-QUALITY: Analysis complete for {len(results)} symbols", file=sys.stderr)
+                return {'success': True, 'results': results, 'requestId': request_id}
+            except Exception as e:
+                print(f"DATA-QUALITY: Analysis failed: {e}", file=sys.stderr)
+                return {'error': f'Data quality analysis failed: {e}', 'requestId': request_id}
         elif request.get('action') == 'parse-symbol-csv':
             try:
                 data = request.get('data', {}) or {}
@@ -2209,6 +2234,20 @@ def handle_request(request, db_service_override=None):
                             print(f"IMPORT: Warning - Failed to create dataset: {dataset_result.get('error')}", file=sys.stderr)
                     except Exception as e:
                         print(f"IMPORT: Warning - Failed to create dataset record: {e}", file=sys.stderr)
+
+                # Run data quality analysis
+                if rows_imported > 0:
+                    try:
+                        print(f"IMPORT: Running data quality analysis for symbol '{symbol}'", file=sys.stderr)
+                        analyzer = DataQualityAnalyzer(current_db_service.market_db_path)
+                        quality_analysis = analyzer.analyze_symbol(symbol)
+                        if 'error' not in quality_analysis:
+                            summary['dataQuality'] = quality_analysis
+                            print(f"IMPORT: Data quality analysis completed successfully", file=sys.stderr)
+                        else:
+                            print(f"IMPORT: Warning - Data quality analysis failed: {quality_analysis.get('error')}", file=sys.stderr)
+                    except Exception as e:
+                        print(f"IMPORT: Warning - Failed to run data quality analysis: {e}", file=sys.stderr)
 
                 # Send final summary
                 print(f"IMPORT: About to send final response for requestId: {request_id}", file=sys.stderr)

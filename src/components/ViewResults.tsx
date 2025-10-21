@@ -1,11 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import CandlestickChart from './CandlestickChart';
+import ImportData from './ImportData';
+import DataAnalysis from './DataAnalysis';
 import './ViewResults.css';
 
 const ViewResults: React.FC = () => {
   const location = useLocation();
-  const [selectedMetric, setSelectedMetric] = useState('data-view');
+  // Default to Browse Datasets when opening Data Management
+  const [selectedMetric, setSelectedMetric] = useState('browse-datasets');
   const [priceData, setPriceData] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -26,6 +29,11 @@ const ViewResults: React.FC = () => {
   
   // New: Symbol search state
   const [symbolSearch, setSymbolSearch] = useState('');
+  
+  // New: Chart modal state
+  const [chartModalOpen, setChartModalOpen] = useState(false);
+  const [chartModalSymbol, setChartModalSymbol] = useState<string | null>(null);
+  const [chartModalData, setChartModalData] = useState<any[]>([]);
 
   // Convert date string to timestamp
   const dateToTimestamp = (dateString: string) => {
@@ -134,6 +142,38 @@ const ViewResults: React.FC = () => {
     setEndDate('');
   };
 
+  // Handle opening chart modal for a specific symbol
+  const handleOpenChartModal = async (symbol: string) => {
+    setChartModalSymbol(symbol);
+    
+    // Fetch all data for this specific symbol (no date filters)
+    if (!window.electronAPI) {
+      setError('Electron API not available');
+      return;
+    }
+
+    try {
+      const result = await window.electronAPI.invoke('get-price-data', {
+        symbol: symbol,
+        limit: 10000, // Get a large limit to capture all available data
+        offset: 0,
+        start_date: null,
+        end_date: null
+      });
+      
+      if (result.error) {
+        throw new Error(result.error);
+      }
+
+      setChartModalData(result.data || []);
+    } catch (err) {
+      console.error('Error fetching chart data:', err);
+      setChartModalData([]);
+    }
+    
+    setChartModalOpen(true);
+  };
+
   // Fetch datasets on component mount
   useEffect(() => {
     fetchDatasets();
@@ -203,16 +243,30 @@ const ViewResults: React.FC = () => {
 
   return (
     <div className="tab-content">
-      <div className="tab-header">
-        <h2>{location.pathname === '/results' ? 'Results & Analysis' : 'Data Management'}</h2>
-        <p>
-          {location.pathname === '/results'
-            ? 'View backtest results, performance metrics, and strategy analysis.'
-            : 'Browse, import, and manage your datasets. View and explore OHLCV data from your available datasets.'}
-        </p>
+      <div className="tab-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div>
+          <h2>{location.pathname === '/results' ? 'Results & Analysis' : 'Data Management'}</h2>
+          <p>
+            {location.pathname === '/results'
+              ? 'View backtest results, performance metrics, and strategy analysis.'
+              : 'Browse, import, and manage your datasets. View and explore OHLCV data from your available datasets.'}
+          </p>
+        </div>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <button
+            className="btn btn-secondary"
+            onClick={() => {
+              console.log('Import Data button clicked, navigating to /import');
+              navigate('/import');
+            }}
+            title="Import Data"
+          >
+            Import Data
+          </button>
+        </div>
       </div>
 
-      <div className="results-container">
+  <div className="results-container">
         <div className="results-navigation tabs-with-descriptions">
           <button
             className={`nav-button tab-with-desc ${selectedMetric === 'browse-datasets' ? 'active' : ''}`}
@@ -229,25 +283,18 @@ const ViewResults: React.FC = () => {
             <div className="tab-description">Explore OHLCV data</div>
           </button>
           <button
-            className={`nav-button tab-with-desc ${selectedMetric === 'ohlcv-chart' ? 'active' : ''}`}
-            onClick={() => setSelectedMetric('ohlcv-chart')}
-          >
-            <div className="tab-label">📈 Charts</div>
-            <div className="tab-description">Visualize price data</div>
-          </button>
-          <button
-            className={`nav-button tab-with-desc ${selectedMetric === 'overview' ? 'active' : ''}`}
-            onClick={() => setSelectedMetric('overview')}
-          >
-            <div className="tab-label">ℹ️ Overview</div>
-            <div className="tab-description">Dataset statistics</div>
-          </button>
-          <button
             className={`nav-button tab-with-desc ${selectedMetric === 'results-analysis' ? 'active' : ''}`}
             onClick={() => setSelectedMetric('results-analysis')}
           >
-            <div className="tab-label">� Analysis</div>
+            <div className="tab-label">📊 Analysis</div>
             <div className="tab-description">Results & analysis</div>
+          </button>
+          <button
+            className={`nav-button tab-with-desc ${selectedMetric === 'data-quality' ? 'active' : ''}`}
+            onClick={() => setSelectedMetric('data-quality')}
+          >
+            <div className="tab-label">✓ Data Quality</div>
+            <div className="tab-description">Data quality metrics & analysis</div>
           </button>
         </div>
 
@@ -538,7 +585,8 @@ const ViewResults: React.FC = () => {
                           <th style={{ padding: '12px', textAlign: 'right', fontWeight: 'bold', borderRight: '1px solid #ddd' }}>High</th>
                           <th style={{ padding: '12px', textAlign: 'right', fontWeight: 'bold', borderRight: '1px solid #ddd' }}>Low</th>
                           <th style={{ padding: '12px', textAlign: 'right', fontWeight: 'bold', borderRight: '1px solid #ddd' }}>Close</th>
-                          <th style={{ padding: '12px', textAlign: 'right', fontWeight: 'bold' }}>Volume</th>
+                          <th style={{ padding: '12px', textAlign: 'right', fontWeight: 'bold', borderRight: '1px solid #ddd' }}>Volume</th>
+                          <th style={{ padding: '12px', textAlign: 'center', fontWeight: 'bold' }}>Chart</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -557,7 +605,17 @@ const ViewResults: React.FC = () => {
                             <td style={{ padding: '12px', borderRight: '1px solid #eee', textAlign: 'right', color: '#4CAF50', fontWeight: '500' }}>${row.high.toFixed(2)}</td>
                             <td style={{ padding: '12px', borderRight: '1px solid #eee', textAlign: 'right', color: '#FF6B6B', fontWeight: '500' }}>${row.low.toFixed(2)}</td>
                             <td style={{ padding: '12px', borderRight: '1px solid #eee', textAlign: 'right', fontWeight: '500' }}>${row.close.toFixed(2)}</td>
-                            <td style={{ padding: '12px', textAlign: 'right' }}>{row.volume.toLocaleString()}</td>
+                            <td style={{ padding: '12px', borderRight: '1px solid #eee', textAlign: 'right' }}>{row.volume.toLocaleString()}</td>
+                            <td style={{ padding: '12px', textAlign: 'center', borderRight: 'none' }}>
+                              <button
+                                className="btn btn-secondary"
+                                onClick={() => handleOpenChartModal(row.symbol)}
+                                style={{ padding: '4px 10px', fontSize: '12px' }}
+                                title={`View chart for ${row.symbol}`}
+                              >
+                                📈 Chart
+                              </button>
+                            </td>
                           </tr>
                         ))}
                       </tbody>
@@ -652,60 +710,6 @@ const ViewResults: React.FC = () => {
                 </div>
               </div>
             )}
-          </div>
-        )}
-
-        {selectedMetric === 'overview' && (
-          <div className="metrics-overview">
-            <div className="metrics-grid">
-              <div className="metric-card">
-                <div className="metric-label">Total Data Points</div>
-                <div className="metric-value positive">
-                  {filteredData.length.toLocaleString()}
-                </div>
-              </div>
-
-              <div className="metric-card">
-                <div className="metric-label">Symbols Available</div>
-                <div className="metric-value">
-                  {symbols.length - 1} {/* Excluding 'ALL' */}
-                </div>
-              </div>
-
-              <div className="metric-card">
-                <div className="metric-label">Date Range</div>
-                <div className="metric-value">
-                  {filteredData.length > 0 ?
-                    `${new Date(Math.min(...filteredData.map(d => d.timestamp)) * 1000).toLocaleDateString()} - ${new Date(Math.max(...filteredData.map(d => d.timestamp)) * 1000).toLocaleDateString()}` :
-                    'No data'}
-                </div>
-              </div>
-
-              <div className="metric-card">
-                <div className="metric-label">Avg Volume</div>
-                <div className="metric-value">
-                  {filteredData.length > 0 ?
-                    Math.round(filteredData.reduce((sum, item) => sum + (item.volume || 0), 0) / filteredData.length).toLocaleString() :
-                    '0'}
-                </div>
-              </div>
-
-              <div className="metric-card">
-                <div className="metric-label">Avg Price</div>
-                <div className="metric-value positive">
-                  {filteredData.length > 0 ?
-                    (filteredData.reduce((sum, item) => sum + item.close, 0) / filteredData.length).toFixed(2) :
-                    '0.00'}
-                </div>
-              </div>
-
-              <div className="metric-card">
-                <div className="metric-label">Data Status</div>
-                <div className="metric-value positive">
-                  ✅ Imported
-                </div>
-              </div>
-            </div>
           </div>
         )}
 
@@ -853,168 +857,168 @@ const ViewResults: React.FC = () => {
           </div>
         )}
 
-        {selectedMetric === 'ohlcv-chart' && (
-          <div className="ohlcv-chart-section">
-            <div className="chart-header">
-              <h3>OHLCV Chart</h3>
-              <p style={{ color: '#666', marginBottom: '15px' }}>
-                Interactive OHLCV (Open, High, Low, Close, Volume) chart visualization
-              </p>
-              <div className="chart-controls">
-                <div className="symbol-filter">
-                  <select
-                    value={selectedSymbol}
-                    onChange={(e) => setSelectedSymbol(e.target.value)}
-                    className="symbol-select"
-                  >
-                    {symbols.map(symbol => (
-                      <option key={symbol} value={symbol}>{symbol}</option>
-                    ))}
-                  </select>
-                </div>
-                
-                <div className="date-filters">
-                  <div className="date-input-group">
-                    <label htmlFor="chartStartDate">From:</label>
-                    <input
-                      type="date"
-                      id="chartStartDate"
-                      value={startDate}
-                      onChange={(e) => setStartDate(e.target.value)}
-                      disabled={loading}
-                    />
-                  </div>
-                  
-                  <div className="date-input-group">
-                    <label htmlFor="chartEndDate">To:</label>
-                    <input
-                      type="date"
-                      id="chartEndDate"
-                      value={endDate}
-                      onChange={(e) => setEndDate(e.target.value)}
-                      disabled={loading}
-                    />
-                  </div>
-                  
-                  <button
-                    className="btn btn-secondary"
-                    onClick={() => {
-                      setStartDate('');
-                      setEndDate('');
-                      setDateFilterApplied(false);
-                    }}
-                    disabled={loading || (!startDate && !endDate)}
-                  >
-                    Clear
-                  </button>
-                </div>
-                
-                <button
-                  className="btn"
-                  onClick={fetchPriceData}
-                  disabled={loading}
-                >
-                  {loading ? 'Loading...' : 'Update Chart'}
-                </button>
-              </div>
-            </div>
-
-            {dateFilterApplied && (
-              <div className="filter-status" style={{
-                padding: '10px',
-                backgroundColor: '#e3f2fd',
-                borderRadius: '4px',
-                marginBottom: '15px',
-                fontSize: '14px',
-                color: '#1976d2',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px'
-              }}>
-                <span>📅</span>
-                <span>Date filter applied: {startDate || 'Beginning'} to {endDate || 'End'}</span>
-              </div>
-            )}
-
-            {error && (
-              <div className="error-message" style={{ padding: '10px', backgroundColor: '#ffebee', color: '#d32f2f', borderRadius: '4px', marginBottom: '15px' }}>
-                {error}
-              </div>
-            )}
-
-            {loading ? (
-              <div className="loading-message" style={{ padding: '20px', textAlign: 'center' }}>
-                Loading chart data...
-              </div>
-            ) : (
-              <div className="ohlcv-chart-container">
-                {/* OHLCV Candlestick Chart */}
-                {selectedSymbol !== 'ALL' && candleChartData.length > 0 ? (
-                  <div style={{
-                    marginBottom: '20px',
-                    padding: '15px',
-                    backgroundColor: '#f9f9f9',
-                    borderRadius: '8px',
-                    border: '1px solid #e0e0e0'
-                  }}>
-                    <h4 style={{ marginTop: 0, marginBottom: '15px', color: '#333' }}>🕯️ OHLCV Candlestick Chart</h4>
-                    <div style={{ width: '100%', height: 400 }}>
-                      <CandlestickChart data={candleChartData} height={400} />
-                    </div>
-                    <div style={{ fontSize: '12px', color: '#666', marginTop: '10px', fontStyle: 'italic' }}>
-                      💡 Tip: Green bars show open price, red line shows close price. Dashed lines show high/low prices.
-                      Purple bars show volume (right axis).
-                    </div>
-                  </div>
-                ) : (
-                  <div className="ohlcv-chart-placeholder">
-                    <div className="placeholder-content">
-                      <div className="placeholder-icon">📈</div>
-                      <h4>OHLCV Chart</h4>
-                      <p>Select a specific symbol to view the OHLCV candlestick chart</p>
-                      <div className="chart-features">
-                        <ul>
-                          <li>🕯️ Candlestick patterns</li>
-                          <li>📊 Volume bars</li>
-                          <li>🔍 Zoom and pan controls</li>
-                          <li>📈 Technical indicators</li>
-                          <li>📥 Export to PNG/PDF</li>
-                        </ul>
-                      </div>
-                    </div>
-                  </div>
-                )}
-                
-                <div className="ohlcv-data-summary" style={{ marginTop: '20px', padding: '15px', backgroundColor: '#f5f5f5', borderRadius: '4px' }}>
-                  <h4>Data Summary</h4>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px', marginTop: '10px' }}>
-                    <div>
-                      <strong>Symbol:</strong> {selectedSymbol}
-                    </div>
-                    <div>
-                      <strong>Data Points:</strong> {filteredData.length}
-                    </div>
-                    <div>
-                      <strong>Date Range:</strong> {filteredData.length > 0 ?
-                        `${new Date(Math.min(...filteredData.map(d => d.timestamp)) * 1000).toLocaleDateString()} - ${new Date(Math.max(...filteredData.map(d => d.timestamp)) * 1000).toLocaleDateString()}` :
-                        'No data available'}
-                    </div>
-                    <div>
-                      <strong>Last Price:</strong> {filteredData.length > 0 ? formatCurrency(filteredData[filteredData.length - 1].close) : 'N/A'}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
         <div className="results-actions">
           <button className="btn">Export Results</button>
           <button className="btn btn-secondary">Save Report</button>
           <button className="btn btn-secondary">Compare Strategies</button>
         </div>
-      </div>
+
+        {selectedMetric === 'data-quality' && (
+          <div className="data-quality-section">
+            <DataAnalysis />
+          </div>
+        )}
+        {chartModalOpen && chartModalSymbol && (
+          <div style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 1500,
+            padding: '20px'
+          }}>
+            <div style={{
+              width: 'min(1400px, 100%)',
+              maxHeight: '90vh',
+              overflowY: 'auto',
+              backgroundColor: '#fff',
+              borderRadius: '8px',
+              boxShadow: '0 10px 40px rgba(0,0,0,0.3)',
+              position: 'relative',
+              padding: '20px'
+            }}>
+              <button
+                onClick={() => setChartModalOpen(false)}
+                style={{
+                  position: 'absolute',
+                  top: '12px',
+                  right: '12px',
+                  background: 'transparent',
+                  border: 'none',
+                  fontSize: '24px',
+                  cursor: 'pointer',
+                  color: '#666'
+                }}
+                aria-label="Close Chart"
+              >
+                ✕
+              </button>
+
+              <h3 style={{ marginTop: 0, marginBottom: '20px' }}>📈 OHLCV Chart - {chartModalSymbol}</h3>
+
+              {chartModalData.length > 0 ? (
+                <div>
+                  {/* Chart Data Summary */}
+                  <div style={{ marginBottom: '20px', padding: '15px', backgroundColor: '#f5f5f5', borderRadius: '4px' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px' }}>
+                      <div>
+                        <strong>Symbol:</strong> {chartModalSymbol}
+                      </div>
+                      <div>
+                        <strong>Data Points:</strong> {chartModalData.length}
+                      </div>
+                      <div>
+                        <strong>Date Range:</strong> {chartModalData.length > 0 ?
+                          `${new Date(Math.min(...chartModalData.map(d => d.timestamp)) * 1000).toLocaleDateString()} - ${new Date(Math.max(...chartModalData.map(d => d.timestamp)) * 1000).toLocaleDateString()}` :
+                          'No data available'}
+                      </div>
+                      <div>
+                        <strong>Last Price:</strong> {chartModalData.length > 0 ? formatCurrency(chartModalData[chartModalData.length - 1].close) : 'N/A'}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Candlestick Chart */}
+                  <div style={{
+                    padding: '15px',
+                    backgroundColor: '#f9f9f9',
+                    borderRadius: '8px',
+                    border: '1px solid #e0e0e0'
+                  }}>
+                    <h4 style={{ marginTop: 0, marginBottom: '15px', color: '#333' }}>🕯️ OHLCV Candlestick Chart (Full Data Range)</h4>
+                    <div style={{ width: '100%', height: 500 }}>
+                      <CandlestickChart 
+                        data={chartModalData.map(d => ({
+                          name: d.date,
+                          open: Number(parseFloat(String(d.open)).toFixed(2)),
+                          high: Number(parseFloat(String(d.high)).toFixed(2)),
+                          low: Number(parseFloat(String(d.low)).toFixed(2)),
+                          close: Number(parseFloat(String(d.close)).toFixed(2)),
+                          volume: d.volume,
+                          candleColor: d.close >= d.open ? '#4CAF50' : '#FF6B6B',
+                          wickColor: d.close >= d.open ? '#2E7D32' : '#C62828'
+                        }))} 
+                        height={500} 
+                      />
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#666', marginTop: '10px', fontStyle: 'italic' }}>
+                      💡 Tip: Green bars show open price, red line shows close price. Dashed lines show high/low prices.
+                      Purple bars show volume (right axis). Use zoom and pan to explore the data.
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ padding: '30px', textAlign: 'center', color: '#999' }}>
+                  <p>No chart data available for {chartModalSymbol}</p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+      {/* Import Data Modal (route: /import) — render inside tab-content so JSX has a single root */}
+      {(() => {
+        console.log('Modal condition check - pathname:', location.pathname, 'showing modal?', location.pathname === '/import');
+        return location.pathname === '/import' && (
+          <div style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0,0,0,0.4)',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 2000,
+            padding: '20px'
+          }}>
+            <div style={{
+              width: 'min(1200px, 100%)',
+              maxHeight: '90vh',
+              overflowY: 'auto',
+              backgroundColor: '#fff',
+              borderRadius: '8px',
+              boxShadow: '0 10px 40px rgba(0,0,0,0.3)',
+              position: 'relative',
+              padding: '20px'
+            }}>
+              <button
+                onClick={() => navigate('/')}
+                style={{
+                  position: 'absolute',
+                  top: '12px',
+                  right: '12px',
+                  background: 'transparent',
+                  border: 'none',
+                  fontSize: '18px',
+                  cursor: 'pointer'
+                }}
+                aria-label="Close Import"
+              >
+                ✕
+              </button>
+              <ImportData />
+            </div>
+          </div>
+        );
+      })()}
+    </div>
     </div>
   );
 };
