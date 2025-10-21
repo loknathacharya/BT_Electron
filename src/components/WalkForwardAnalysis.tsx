@@ -72,6 +72,7 @@ export const WalkForwardAnalysis: React.FC<WalkForwardAnalysisProps> = ({ scanne
   const [results, setResults] = useState<WalkForwardResults | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showInfo, setShowInfo] = useState(false);
 
   const runWalkForward = async () => {
     if (!symbol.trim()) {
@@ -178,6 +179,48 @@ export const WalkForwardAnalysis: React.FC<WalkForwardAnalysisProps> = ({ scanne
         <br />
         <strong>Default Strategy:</strong> SMA Crossover - Buy when SMA(10) crosses above SMA(30), Sell when crosses below
       </p>
+
+      {/* INFO BANNER */}
+      <div className="info-banner walk-forward-info">
+        <div className="info-header">
+          <h3>📚 What is Walk-Forward Analysis?</h3>
+          <button className="info-toggle" onClick={() => setShowInfo(!showInfo)}>
+            {showInfo ? '▼' : '▶'}
+          </button>
+        </div>
+        
+        {showInfo && (
+          <div className="info-content">
+            <p>
+              <strong>Walk-Forward Analysis</strong> tests your strategy on recent data 
+              using parameters optimized on older data. This simulates real-world trading 
+              where you optimize once, then trade forward.
+            </p>
+            
+            <h4>How it works:</h4>
+            <ol>
+              <li>Divide historical data into overlapping periods</li>
+              <li>Optimize parameters on each period (in-sample)</li>
+              <li>Test optimized params on next period (out-of-sample)</li>
+              <li>Repeat, stepping forward through time</li>
+            </ol>
+            
+            <h4>Why it matters:</h4>
+            <ul>
+              <li>Avoids overfitting to historical data</li>
+              <li>More realistic performance expectations</li>
+              <li>Tests if strategy adapts over time</li>
+            </ul>
+            
+            <h4>What to look for:</h4>
+            <ul>
+              <li>📊 Out-of-sample returns vs in-sample (should be similar)</li>
+              <li>📉 Parameter stability (should change gradually, not wildly)</li>
+              <li>📈 Consistency across periods (most periods profitable?)</li>
+            </ul>
+          </div>
+        )}
+      </div>
 
       {/* Configuration */}
       <div className="config-section">

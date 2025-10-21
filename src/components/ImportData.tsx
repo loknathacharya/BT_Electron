@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import './ImportData.css';
 
 const ImportData: React.FC = () => {
   const [filePath, setFilePath] = useState<string>('');
@@ -24,6 +25,8 @@ const ImportData: React.FC = () => {
   // New: Dataset metadata
   const [datasetName, setDatasetName] = useState<string>('');
   const [datasetDescription, setDatasetDescription] = useState<string>('');
+  const [showOptions, setShowOptions] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const handleSelectFile = async () => {
     if (!window.electronAPI) {
@@ -528,113 +531,152 @@ const ImportData: React.FC = () => {
 
         {filePath && (
           <div className="import-controls">
-            <div className="form-group">
-              <label htmlFor="dataset-name">Dataset Name: <span style={{ color: 'red' }}>*</span></label>
-              <input
-                type="text"
-                id="dataset-name"
-                placeholder="e.g., My Trading Data, Daily OHLC 2024"
-                value={datasetName}
-                onChange={(e) => setDatasetName(e.target.value)}
-              />
-              <p style={{ fontSize: '13px', color: '#666', marginTop: '4px', marginBottom: '0' }}>
-                A descriptive name to identify this dataset for future use.
-              </p>
-            </div>
+            <div className="form-sections">
+              {/* ESSENTIAL SECTION - Always visible */}
+              <div className="form-section essential">
+                <div className="section-header">
+                  <h3>📥 Required</h3>
+                  <span className="section-badge">Essential</span>
+                </div>
+                
+                <div className="section-body">
+                  <div className="form-group">
+                    <label htmlFor="dataset-name">Dataset Name: <span style={{ color: 'red' }}>*</span></label>
+                    <input
+                      type="text"
+                      id="dataset-name"
+                      placeholder="e.g., My Trading Data, Daily OHLC 2024"
+                      value={datasetName}
+                      onChange={(e) => setDatasetName(e.target.value)}
+                    />
+                    <p style={{ fontSize: '13px', color: '#666', marginTop: '4px', marginBottom: '0' }}>
+                      A descriptive name to identify this dataset for future use.
+                    </p>
+                  </div>
 
-            <div className="form-group">
-              <label htmlFor="dataset-description">Dataset Description:</label>
-              <textarea
-                id="dataset-description"
-                placeholder="e.g., Daily OHLC data for crypto trading backtests"
-                value={datasetDescription}
-                onChange={(e) => setDatasetDescription(e.target.value)}
-                style={{ minHeight: '60px', resize: 'vertical' }}
-              />
-              <p style={{ fontSize: '13px', color: '#666', marginTop: '4px', marginBottom: '0' }}>
-                Optional notes about the dataset (data source, symbols included, etc.)
-              </p>
-            </div>
-
-            <div className="form-group">
-              <label htmlFor="symbol">Symbol:</label>
-              <input
-                type="text"
-                id="symbol"
-                placeholder="e.g., AAPL, BTC-USD"
-                defaultValue=""
-              />
-            </div>
-
-            <div className="form-group">
-              <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <input
-                  type="checkbox"
-                  id="incremental-updates"
-                  checked={incrementalUpdates}
-                  onChange={(e) => setIncrementalUpdates(e.target.checked)}
-                  style={{ width: '18px', height: '18px' }}
-                />
-                Enable Incremental Updates
-              </label>
-              <p style={{ fontSize: '14px', color: '#666', marginTop: '5px', marginBottom: '0' }}>
-                When enabled, only new data (outside existing date ranges) will be imported for each symbol.
-                This prevents duplicate data and allows for efficient updates.
-              </p>
-            </div>
-
-            {/* Column mapping interface for Sprint 2.2 */}
-            <div className="column-mapping">
-              <h3>Column Mapping</h3>
-              <p>Drag columns from your file to the required fields below. Required fields are highlighted.</p>
-
-              <div className="mapping-container" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', marginTop: '15px' }}>
-                {/* Source columns (from CSV) */}
-                <div className="source-columns">
-                  <h4>Your File Columns:</h4>
-                  <div className="column-list" style={{ border: '1px solid #ddd', padding: '10px', minHeight: '200px', backgroundColor: '#f9f9f9' }}>
-                    {columns.map(col => (
-                      <div
-                        key={col}
-                        className="draggable-column"
-                        draggable
-                        onDragStart={(e) => {
-                          e.dataTransfer.setData('text/plain', col);
-                          e.dataTransfer.effectAllowed = 'copy';
-                        }}
-                        style={{
-                          padding: '8px',
-                          margin: '4px 0',
-                          backgroundColor: '#fff',
-                          border: '1px solid #ccc',
-                          borderRadius: '4px',
-                          cursor: 'grab'
-                        }}
-                      >
-                        {col}
-                      </div>
-                    ))}
+                  <div className="form-group">
+                    <label htmlFor="symbol">Symbol:</label>
+                    <input
+                      type="text"
+                      id="symbol"
+                      placeholder="e.g., AAPL, BTC-USD"
+                      defaultValue=""
+                    />
                   </div>
                 </div>
+              </div>
+              
+              {/* OPTIONS SECTION - Collapsible */}
+              <div className="form-section">
+                <button 
+                  className="section-header collapsible"
+                  onClick={() => setShowOptions(!showOptions)}
+                  type="button"
+                >
+                  <h3>⚙️ Options</h3>
+                  <span className="toggle-icon">{showOptions ? '▼' : '▶'}</span>
+                </button>
+                
+                {showOptions && (
+                  <div className="section-body">
+                    <div className="form-group">
+                      <label htmlFor="dataset-description">Dataset Description:</label>
+                      <textarea
+                        id="dataset-description"
+                        placeholder="e.g., Daily OHLC data for crypto trading backtests"
+                        value={datasetDescription}
+                        onChange={(e) => setDatasetDescription(e.target.value)}
+                        style={{ minHeight: '60px', resize: 'vertical' }}
+                      />
+                      <p style={{ fontSize: '13px', color: '#666', marginTop: '4px', marginBottom: '0' }}>
+                        Optional notes about the dataset (data source, symbols included, etc.)
+                      </p>
+                    </div>
 
-                {/* Target fields (required OHLC format) */}
-                <div className="target-fields">
-                  <h4>Required Fields:</h4>
-                  <div className="field-list" style={{ border: '1px solid #ddd', padding: '10px', minHeight: '200px' }}>
-                    {[
-                      { name: 'timestamp', label: 'Timestamp', required: true },
-                      { name: 'open', label: 'Open', required: true },
-                      { name: 'high', label: 'High', required: true },
-                      { name: 'low', label: 'Low', required: true },
-                      { name: 'close', label: 'Close', required: true },
-                      { name: 'volume', label: 'Volume', required: false },
-                      { name: 'ticker', label: 'Ticker', required: false }
-                    ].map(field => {
-                      const mappedColumn = columnMapping[field.name];
-                      const autoMappedColumn = autoMapping[field.name];
-                      const confidence = confidenceScores[field.name] || 0;
-                      const isAutoMapped = autoMappedColumn && !autoMappingApplied;
-                      const isCurrentlyMapped = mappedColumn && mappedColumn !== autoMappedColumn;
+                    <div className="form-group">
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <input
+                          type="checkbox"
+                          id="incremental-updates"
+                          checked={incrementalUpdates}
+                          onChange={(e) => setIncrementalUpdates(e.target.checked)}
+                          style={{ width: '18px', height: '18px' }}
+                        />
+                        Enable Incremental Updates
+                      </label>
+                      <p style={{ fontSize: '14px', color: '#666', marginTop: '5px', marginBottom: '0' }}>
+                        When enabled, only new data (outside existing date ranges) will be imported for each symbol.
+                        This prevents duplicate data and allows for efficient updates.
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+              
+              {/* ADVANCED SECTION - Hidden by default */}
+              <div className="form-section">
+                <button 
+                  className="section-header collapsible"
+                  onClick={() => setShowAdvanced(!showAdvanced)}
+                  type="button"
+                >
+                  <h3>🔬 Advanced</h3>
+                  <span className="toggle-icon">{showAdvanced ? '▼' : '▶'}</span>
+                </button>
+                
+                {showAdvanced && (
+                  <div className="section-body">
+                    <div className="column-mapping">
+                      <h3>Column Mapping</h3>
+                      <p>Drag columns from your file to the required fields below. Required fields are highlighted.</p>
+
+                      <div className="mapping-container" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', marginTop: '15px' }}>
+                        {/* Source columns (from CSV) */}
+                        <div className="source-columns">
+                          <h4>Your File Columns:</h4>
+                          <div className="column-list" style={{ border: '1px solid #ddd', padding: '10px', minHeight: '200px', backgroundColor: '#f9f9f9' }}>
+                            {columns.map(col => (
+                              <div
+                                key={col}
+                                className="draggable-column"
+                                draggable
+                                onDragStart={(e) => {
+                                  e.dataTransfer.setData('text/plain', col);
+                                  e.dataTransfer.effectAllowed = 'copy';
+                                }}
+                                style={{
+                                  padding: '8px',
+                                  margin: '4px 0',
+                                  backgroundColor: '#fff',
+                                  border: '1px solid #ccc',
+                                  borderRadius: '4px',
+                                  cursor: 'grab'
+                                }}
+                              >
+                                {col}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Target fields (required OHLC format) */}
+                        <div className="target-fields">
+                          <h4>Required Fields:</h4>
+                          <div className="field-list" style={{ border: '1px solid #ddd', padding: '10px', minHeight: '200px' }}>
+                            {[
+                              { name: 'timestamp', label: 'Timestamp', required: true },
+                              { name: 'open', label: 'Open', required: true },
+                              { name: 'high', label: 'High', required: true },
+                              { name: 'low', label: 'Low', required: true },
+                              { name: 'close', label: 'Close', required: true },
+                              { name: 'volume', label: 'Volume', required: false },
+                              { name: 'ticker', label: 'Ticker', required: false }
+                            ].map(field => {
+                              const mappedColumn = columnMapping[field.name];
+                              const autoMappedColumn = autoMapping[field.name];
+                              const confidence = confidenceScores[field.name] || 0;
+                              const isAutoMapped = autoMappedColumn && !autoMappingApplied;
+                              const isCurrentlyMapped = mappedColumn && mappedColumn !== autoMappedColumn;
 
                       return (
                         <div
@@ -755,6 +797,10 @@ const ImportData: React.FC = () => {
                   ))}
                 </div>
               )}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="import-actions">

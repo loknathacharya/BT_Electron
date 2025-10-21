@@ -46,6 +46,9 @@ const BackupRecovery: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [selectedBackup, setSelectedBackup] = useState<string | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [confirmDeleteBackup, setConfirmDeleteBackup] = useState<string | null>(null);
 
   useEffect(() => {
     loadBackups();
@@ -168,9 +171,12 @@ const BackupRecovery: React.FC = () => {
   };
 
   const deleteBackup = async (backupName: string) => {
-    if (!confirm(`Are you sure you want to delete backup: ${backupName}?`)) {
-      return;
-    }
+    setConfirmDeleteBackup(backupName);
+    setShowDeleteConfirm(true);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!confirmDeleteBackup) return;
 
     setLoading(true);
     setError(null);
@@ -178,13 +184,13 @@ const BackupRecovery: React.FC = () => {
 
     try {
       const result = await window.electronAPI.invoke('delete-backup', {
-        backupName
+        backupName: confirmDeleteBackup
       });
 
       if (result.error) {
         setError(`Delete failed: ${result.error}`);
       } else if (result.success) {
-        setSuccess(`Backup deleted: ${backupName}`);
+        setSuccess(`Backup deleted: ${confirmDeleteBackup}`);
         loadBackups();
         loadStats();
       }
@@ -192,6 +198,8 @@ const BackupRecovery: React.FC = () => {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
+      setShowDeleteConfirm(false);
+      setConfirmDeleteBackup(null);
     }
   };
 
@@ -473,6 +481,86 @@ const BackupRecovery: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* DANGER ZONE */}
+      <div className="danger-zone">
+        <div className="danger-header">
+          <h2 style={{color: '#dc3545', margin: 0}}>⚠️ Danger Zone</h2>
+          <p style={{color: '#999', margin: '4px 0 0 0', fontSize: '12px'}}>
+            Irreversible operations. Proceed with caution.
+          </p>
+        </div>
+        
+        <div className="danger-actions">
+          <button 
+            className="btn-danger"
+            onClick={() => setShowClearConfirm(true)}
+            disabled={loading}
+          >
+            🗑️ Delete All Backups
+          </button>
+        </div>
+        
+        {/* DELETE ALL CONFIRMATION */}
+        {showClearConfirm && (
+          <div className="confirmation-dialog">
+            <div className="confirmation-overlay" onClick={() => setShowClearConfirm(false)} />
+            <div className="confirmation-content">
+              <h4>Delete All Backups?</h4>
+              <p>This will permanently delete all backup files. This cannot be undone.</p>
+              <p><strong>Backups to delete: {backups.length}</strong></p>
+              
+              <div className="confirmation-actions">
+                <button 
+                  className="btn-secondary"
+                  onClick={() => setShowClearConfirm(false)}
+                >
+                  Cancel
+                </button>
+                <button 
+                  className="btn-danger"
+                  onClick={async () => {
+                    for (const backup of backups) {
+                      await deleteBackup(backup.backup_name);
+                    }
+                    setShowClearConfirm(false);
+                  }}
+                >
+                  Yes, Delete All Backups
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Confirmation Dialog for individual backup delete */}
+      {showDeleteConfirm && confirmDeleteBackup && (
+        <div className="confirmation-dialog">
+          <div className="confirmation-overlay" onClick={() => setShowDeleteConfirm(false)} />
+          <div className="confirmation-content">
+            <h4>Delete Backup?</h4>
+            <p>This will permanently delete the backup file. This cannot be undone.</p>
+            <p><strong>Backup: {confirmDeleteBackup}</strong></p>
+            
+            <div className="confirmation-actions">
+              <button 
+                className="btn-secondary"
+                onClick={() => setShowDeleteConfirm(false)}
+              >
+                Cancel
+              </button>
+              <button 
+                className="btn-danger"
+                onClick={handleConfirmDelete}
+                disabled={loading}
+              >
+                Yes, Delete Backup
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Integrity Check Results */}
       {integrityResults.length > 0 && (

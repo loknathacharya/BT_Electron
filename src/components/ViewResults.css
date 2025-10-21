@@ -1,0 +1,51 @@
+/* Data Management Tab Styling */
+
+.tabs-with-descriptions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+  overflow-x: auto;
+  flex-wrap: wrap;
+}
+
+.nav-button.tab-with-desc {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  cursor: pointer;
+  min-width: 140px;
+  text-align: center;
+  transition: all 0.2s;
+  font-family: inherit;
+  font-size: inherit;
+}
+
+.nav-button.tab-with-desc:hover {
+  border-color: #007bff;
+  background: #f0f7ff;
+}
+
+.nav-button.tab-with-desc.active {
+  background: #007bff;
+  color: white;
+  border-color: #007bff;
+}
+
+.tab-label {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.tab-description {
+  font-size: 11px;
+  opacity: 0.8;
+  line-height: 1.2;
+}
+
+.nav-button.tab-with-desc.active .tab-description {
+  opacity: 0.9;
+}

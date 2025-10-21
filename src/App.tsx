@@ -9,6 +9,7 @@ import BacktestEngine from './components/BacktestEngine';
 import PortfolioBacktest from './components/PortfolioBacktest';
 import { WalkForwardAnalysis } from './components/WalkForwardAnalysis';
 import BackupRecovery from './components/BackupRecovery';
+import Breadcrumbs from './components/Breadcrumbs';
 
 function Navigation() {
   const location = useLocation();
@@ -48,6 +49,7 @@ function AppContent() {
   return (
     <div className="app">
       <Navigation />
+      <Breadcrumbs />
       <main className="main-content">
         <Routes>
           {/* Import Data as home page */}

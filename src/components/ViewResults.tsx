@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import CandlestickChart from './CandlestickChart';
+import './ViewResults.css';
 
 const ViewResults: React.FC = () => {
   const location = useLocation();
@@ -212,36 +213,41 @@ const ViewResults: React.FC = () => {
       </div>
 
       <div className="results-container">
-        <div className="results-navigation">
+        <div className="results-navigation tabs-with-descriptions">
           <button
-            className={`nav-button ${selectedMetric === 'browse-datasets' ? 'active' : ''}`}
+            className={`nav-button tab-with-desc ${selectedMetric === 'browse-datasets' ? 'active' : ''}`}
             onClick={() => setSelectedMetric('browse-datasets')}
           >
-            📚 Browse Datasets
+            <div className="tab-label">� Browse Datasets</div>
+            <div className="tab-description">View and manage imported datasets</div>
           </button>
           <button
-            className={`nav-button ${selectedMetric === 'data-view' ? 'active' : ''}`}
+            className={`nav-button tab-with-desc ${selectedMetric === 'data-view' ? 'active' : ''}`}
             onClick={() => setSelectedMetric('data-view')}
           >
-            📊 Data View
+            <div className="tab-label">📊 Data View</div>
+            <div className="tab-description">Explore OHLCV data</div>
           </button>
           <button
-            className={`nav-button ${selectedMetric === 'overview' ? 'active' : ''}`}
-            onClick={() => setSelectedMetric('overview')}
-          >
-            📈 Overview
-          </button>
-          <button
-            className={`nav-button ${selectedMetric === 'results-analysis' ? 'active' : ''}`}
-            onClick={() => setSelectedMetric('results-analysis')}
-          >
-            📋 Results & Analysis
-          </button>
-          <button
-            className={`nav-button ${selectedMetric === 'ohlcv-chart' ? 'active' : ''}`}
+            className={`nav-button tab-with-desc ${selectedMetric === 'ohlcv-chart' ? 'active' : ''}`}
             onClick={() => setSelectedMetric('ohlcv-chart')}
           >
-            📊 OHLCV Chart
+            <div className="tab-label">📈 Charts</div>
+            <div className="tab-description">Visualize price data</div>
+          </button>
+          <button
+            className={`nav-button tab-with-desc ${selectedMetric === 'overview' ? 'active' : ''}`}
+            onClick={() => setSelectedMetric('overview')}
+          >
+            <div className="tab-label">ℹ️ Overview</div>
+            <div className="tab-description">Dataset statistics</div>
+          </button>
+          <button
+            className={`nav-button tab-with-desc ${selectedMetric === 'results-analysis' ? 'active' : ''}`}
+            onClick={() => setSelectedMetric('results-analysis')}
+          >
+            <div className="tab-label">� Analysis</div>
+            <div className="tab-description">Results & analysis</div>
           </button>
         </div>
 
