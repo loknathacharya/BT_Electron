@@ -7,6 +7,21 @@ import {
   DiversificationMetrics
 } from './PortfolioCharts';
 import { RebalancingTimeline } from './RebalancingTimeline';
+import { PositionSizingSelector } from './PortfolioBacktest/PositionSizingSelector';
+import { SignalTypeSelector } from './PortfolioBacktest/SignalTypeSelector';
+import { RiskManagementControls } from './PortfolioBacktest/RiskManagementControls';
+import { TradeAnalyticsDashboard } from './TradeAnalytics/TradeAnalyticsDashboard';
+import { MonteCarloSimulation } from './MonteCarloSimulation/MonteCarloSimulation';
+import { LeverageAnalysis } from './LeverageAnalysis/LeverageAnalysis';
+import { InvestedCapital } from './InvestedCapital/InvestedCapital';
+import { ParameterOptimization } from './ParameterOptimization/ParameterOptimization';
+import { 
+  PositionSizingMethod, 
+  RiskManagementConfig, 
+  TradeAnalytics,
+  LeverageMetrics,
+  InvestedCapitalPoint
+} from '../types/portfolio';
 
 interface PortfolioBacktestProps {
   scannerSpec: any;
@@ -58,6 +73,12 @@ interface PortfolioResults {
     symbolsCount: number;
     totalTrades: number;
   };
+  // Phase 2 additions
+  investedCapitalTimeline?: InvestedCapitalPoint[];
+  tradeAnalytics?: TradeAnalytics;
+  leverageMetrics?: LeverageMetrics;
+  leverageTimeline?: Array<{ date: string; leverage: number }>;
+  leverageVsPerformance?: Array<{ leverage: number; pnlPct: number; symbol: string }>;
 }
 
 const PortfolioBacktest: React.FC<PortfolioBacktestProps> = ({ scannerSpec }) => {
@@ -77,6 +98,30 @@ const PortfolioBacktest: React.FC<PortfolioBacktestProps> = ({ scannerSpec }) =>
   const [results, setResults] = useState<PortfolioResults | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Phase 2: Advanced Features State
+  const [positionSizingConfig, setPositionSizingConfig] = useState({
+    method: 'equal_weight' as PositionSizingMethod,
+    riskPerTrade: 2.0,
+    fixedAmount: 10000,
+    volatilityTarget: 0.15,
+    atrMultiplier: 1.0,
+    kellyWinRate: 55,
+    kellyAvgWin: 8,
+    kellyAvgLoss: -4,
+  } as any);
+
+  const [signalType, setSignalType] = useState<'long' | 'short'>('long');
+
+  const [riskManagementConfig, setRiskManagementConfig] = useState<RiskManagementConfig>({
+    allowLeverage: false,
+    oneTradePerInstrument: false,
+    stopLossPct: null,
+    takeProfitPct: null,
+    holdingPeriodDays: null,
+  });
+
+  const [activeResultsTab, setActiveResultsTab] = useState<'overview' | 'invested' | 'trades' | 'analytics' | 'monte-carlo' | 'leverage' | 'optimization'>('overview');
 
   const addSymbol = () => {
     setSymbols([...symbols, '']);
@@ -168,6 +213,9 @@ const PortfolioBacktest: React.FC<PortfolioBacktestProps> = ({ scannerSpec }) =>
         symbols: validSymbols,
         backtestConfig,
         portfolioConfig,
+        positionSizingConfig,
+        signalType,
+        riskManagementConfig,
       };
       const response = await window.electronAPI.invoke('run-portfolio-backtest', payload);
 
@@ -393,6 +441,30 @@ const PortfolioBacktest: React.FC<PortfolioBacktestProps> = ({ scannerSpec }) =>
         </div>
       </div>
 
+      {/* Phase 2: Position Sizing */}
+      <div className="config-section">
+        <PositionSizingSelector
+          config={positionSizingConfig}
+          onChange={setPositionSizingConfig}
+        />
+      </div>
+
+      {/* Phase 2: Signal Type Selection */}
+      <div className="config-section">
+        <SignalTypeSelector
+          signalType={signalType}
+          onChange={setSignalType}
+        />
+      </div>
+
+      {/* Phase 2: Risk Management */}
+      <div className="config-section">
+        <RiskManagementControls
+          config={riskManagementConfig}
+          onChange={setRiskManagementConfig}
+        />
+      </div>
+
       {/* Run Button */}
       <div className="actions">
         <button
@@ -416,6 +488,57 @@ const PortfolioBacktest: React.FC<PortfolioBacktestProps> = ({ scannerSpec }) =>
         <div className="results-section">
           <h3>Portfolio Results</h3>
           
+          {/* Results Navigation Tabs */}
+          <div className="results-tabs">
+            <button 
+              className={`tab-button ${activeResultsTab === 'overview' ? 'active' : ''}`}
+              onClick={() => setActiveResultsTab('overview')}
+            >
+              📊 Overview
+            </button>
+            <button 
+              className={`tab-button ${activeResultsTab === 'invested' ? 'active' : ''}`}
+              onClick={() => setActiveResultsTab('invested')}
+            >
+              💰 Invested Capital
+            </button>
+            <button 
+              className={`tab-button ${activeResultsTab === 'trades' ? 'active' : ''}`}
+              onClick={() => setActiveResultsTab('trades')}
+            >
+              📋 Trades
+            </button>
+            <button 
+              className={`tab-button ${activeResultsTab === 'analytics' ? 'active' : ''}`}
+              onClick={() => setActiveResultsTab('analytics')}
+            >
+              📊 Analytics
+            </button>
+            <button 
+              className={`tab-button ${activeResultsTab === 'monte-carlo' ? 'active' : ''}`}
+              onClick={() => setActiveResultsTab('monte-carlo')}
+            >
+              🎲 Monte Carlo
+            </button>
+            <button 
+              className={`tab-button ${activeResultsTab === 'leverage' ? 'active' : ''}`}
+              onClick={() => setActiveResultsTab('leverage')}
+            >
+              ⚡ Leverage
+            </button>
+            <button 
+              className={`tab-button ${activeResultsTab === 'optimization' ? 'active' : ''}`}
+              onClick={() => setActiveResultsTab('optimization')}
+            >
+              🔍 Optimization
+            </button>
+          </div>
+
+          {/* Tab Content */}
+          <div className="tab-content">
+            {/* Overview Tab */}
+            {activeResultsTab === 'overview' && (
+              <>
           {/* Portfolio-Level Metrics */}
           <div className="metrics-card">
             <h4>Portfolio Metrics</h4>
@@ -611,6 +734,107 @@ const PortfolioBacktest: React.FC<PortfolioBacktestProps> = ({ scannerSpec }) =>
             <span>Completed in {results.stats.timeMs}ms</span>
             <span>{results.stats.symbolsCount} symbols</span>
             <span>{results.stats.totalTrades} total trades</span>
+          </div>
+              </>
+            )}
+
+            {/* Invested Capital Tab */}
+            {activeResultsTab === 'invested' && results.investedCapitalTimeline && (
+              <InvestedCapital
+                timeline={results.investedCapitalTimeline}
+                initialCapital={backtestConfig.initial_capital}
+              />
+            )}
+
+            {/* Trades Tab */}
+            {activeResultsTab === 'trades' && (
+              <div className="trades-section">
+                <h4>Trade Log</h4>
+                <div className="trades-table-wrapper">
+                  <table className="trades-table">
+                    <thead>
+                      <tr>
+                        <th>Symbol</th>
+                        <th>Entry Date</th>
+                        <th>Exit Date</th>
+                        <th>Entry Price</th>
+                        <th>Exit Price</th>
+                        <th>Shares</th>
+                        <th>P&L ($)</th>
+                        <th>P&L (%)</th>
+                        <th>Days Held</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Object.entries(results.symbolTrades).flatMap(([symbol, trades]) =>
+                        trades.map((trade: any, idx: number) => (
+                          <tr key={`${symbol}-${idx}`}>
+                            <td><strong>{symbol}</strong></td>
+                            <td>{new Date(trade.entry_date).toLocaleDateString()}</td>
+                            <td>{new Date(trade.exit_date).toLocaleDateString()}</td>
+                            <td>${trade.entry_price.toFixed(2)}</td>
+                            <td>${trade.exit_price.toFixed(2)}</td>
+                            <td>{trade.shares}</td>
+                            <td className={trade.pl >= 0 ? 'positive' : 'negative'}>
+                              ${trade.pl.toFixed(2)}
+                            </td>
+                            <td className={trade.pl_pct >= 0 ? 'positive' : 'negative'}>
+                              {(trade.pl_pct * 100).toFixed(2)}%
+                            </td>
+                            <td>{Math.floor((new Date(trade.exit_date).getTime() - new Date(trade.entry_date).getTime()) / (1000 * 60 * 60 * 24))}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Trade Analytics Tab */}
+            {activeResultsTab === 'analytics' && results.tradeAnalytics && (
+              <TradeAnalyticsDashboard
+                analytics={results.tradeAnalytics}
+                trades={Object.values(results.symbolTrades).flat()}
+              />
+            )}
+
+            {/* Monte Carlo Tab */}
+            {activeResultsTab === 'monte-carlo' && (
+              <MonteCarloSimulation
+                trades={Object.values(results.symbolTrades).flat()}
+                initialCapital={backtestConfig.initial_capital}
+                onRunSimulation={async (numSims, numTrades) => {
+                  const response = await window.electronAPI.invoke('run-monte-carlo', {
+                    trade_returns: Object.values(results.symbolTrades).flat().map((t: any) => t.pl_pct),
+                    n_simulations: numSims,
+                    n_trades: numTrades
+                  });
+                  return response;
+                }}
+              />
+            )}
+
+            {/* Leverage Analysis Tab */}
+            {activeResultsTab === 'leverage' && results.leverageMetrics && (
+              <LeverageAnalysis
+                metrics={results.leverageMetrics}
+                leverageTimeline={results.leverageTimeline || []}
+                leverageVsPerformance={results.leverageVsPerformance || []}
+              />
+            )}
+
+            {/* Parameter Optimization Tab */}
+            {activeResultsTab === 'optimization' && (
+              <ParameterOptimization
+                scannerSpec={scannerSpec}
+                symbols={symbols.filter(s => s.trim())}
+                baseConfig={backtestConfig}
+                onOptimizationComplete={(results) => {
+                  console.log('Optimization complete:', results);
+                }}
+              />
+            )}
           </div>
         </div>
       )}

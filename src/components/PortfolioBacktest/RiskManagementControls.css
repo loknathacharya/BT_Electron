@@ -1,0 +1,150 @@
+/* Risk Management Controls Styles */
+
+.risk-management-controls {
+  background: #f8f9fa;
+  border: 1px solid #dee2e6;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.risk-management-controls .section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 16px 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #212529;
+}
+
+.risk-management-controls .section-title .icon {
+  font-size: 24px;
+}
+
+.controls-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.control-group {
+  background: white;
+  border-radius: 6px;
+  padding: 16px;
+  border: 1px solid #e9ecef;
+}
+
+.control-group.full-width {
+  grid-column: 1 / -1;
+}
+
+.control-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  font-size: 14px;
+  color: #495057;
+  margin-bottom: 8px;
+  cursor: pointer;
+}
+
+.control-label input[type="checkbox"] {
+  cursor: pointer;
+  width: 18px;
+  height: 18px;
+}
+
+.control-label.checkbox-label {
+  margin-bottom: 12px;
+}
+
+.numeric-input {
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 14px;
+  border: 1px solid #ced4da;
+  border-radius: 4px;
+  margin-bottom: 8px;
+}
+
+.numeric-input:focus {
+  outline: none;
+  border-color: #80bdff;
+  box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25);
+}
+
+.control-hint {
+  font-size: 12px;
+  color: #6c757d;
+  margin: 0;
+  line-height: 1.4;
+}
+
+.control-hint.success {
+  color: #155724;
+  background: #d4edda;
+  border: 1px solid #c3e6cb;
+  padding: 8px 12px;
+  border-radius: 4px;
+}
+
+.control-hint.warning {
+  color: #856404;
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  padding: 8px 12px;
+  border-radius: 4px;
+}
+
+.risk-summary {
+  background: white;
+  border-radius: 6px;
+  padding: 16px;
+  border-left: 4px solid #007bff;
+}
+
+.risk-summary h4 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 12px 0;
+  color: #495057;
+}
+
+.risk-summary ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.risk-summary li {
+  padding: 6px 0;
+  font-size: 13px;
+  color: #495057;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.risk-summary li::before {
+  content: '✓';
+  color: #28a745;
+  font-weight: bold;
+}
+
+.risk-summary li.warning-item::before {
+  content: '⚠️';
+}
+
+.risk-summary li.info-item::before {
+  content: 'ℹ️';
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .controls-grid {
+    grid-template-columns: 1fr;
+  }
+}

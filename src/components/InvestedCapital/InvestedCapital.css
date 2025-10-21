@@ -1,0 +1,395 @@
+.invested-capital {
+  padding: 20px;
+  background-color: #f8f9fa;
+  border-radius: 8px;
+}
+
+.capital-header {
+  margin-bottom: 24px;
+  text-align: center;
+}
+
+.capital-header h3 {
+  margin: 0 0 8px 0;
+  color: #1a1a2e;
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.capital-header .subtitle {
+  margin: 0;
+  color: #6c757d;
+  font-size: 14px;
+}
+
+.summary-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.capital-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.capital-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+}
+
+.card-icon {
+  font-size: 32px;
+  line-height: 1;
+}
+
+.card-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.card-label {
+  font-size: 11px;
+  color: #6c757d;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.card-value {
+  font-size: 22px;
+  font-weight: 700;
+  color: #1a1a2e;
+}
+
+.card-value.positive {
+  color: #28a745;
+}
+
+.card-value.highlight {
+  color: #ff6b35;
+}
+
+.card-hint {
+  font-size: 11px;
+  color: #6c757d;
+  font-style: italic;
+  margin-top: 2px;
+}
+
+.chart-section {
+  background: white;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 24px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.chart-section h4 {
+  margin: 0 0 16px 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #1a1a2e;
+}
+
+.chart-container {
+  background: #f8f9fa;
+  border-radius: 6px;
+  padding: 16px;
+}
+
+.custom-tooltip {
+  background: white;
+  padding: 12px;
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.custom-tooltip p {
+  margin: 4px 0;
+  font-size: 13px;
+  color: #495057;
+}
+
+.tooltip-date {
+  font-size: 14px;
+  margin-bottom: 8px !important;
+  border-bottom: 1px solid #dee2e6;
+  padding-bottom: 4px;
+}
+
+.tooltip-invested {
+  color: #007bff;
+  font-weight: 600;
+}
+
+.tooltip-available {
+  color: #28a745;
+  font-weight: 600;
+}
+
+.utilization-legend {
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+  margin-top: 16px;
+  padding: 12px;
+  background: #f8f9fa;
+  border-radius: 4px;
+}
+
+.util-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.util-color {
+  width: 20px;
+  height: 12px;
+  border-radius: 2px;
+}
+
+.util-range.low .util-color {
+  background-color: #28a745;
+}
+
+.util-range.medium .util-color {
+  background-color: #ffc107;
+}
+
+.util-range.high .util-color {
+  background-color: #dc3545;
+}
+
+.allocation-breakdown {
+  background: white;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 24px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.allocation-breakdown h4 {
+  margin: 0 0 16px 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #1a1a2e;
+}
+
+.allocation-table {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.table-header,
+.table-row,
+.table-footer {
+  display: grid;
+  grid-template-columns: 2fr 1.5fr 1fr 2fr;
+  gap: 16px;
+  padding: 12px 16px;
+  align-items: center;
+}
+
+.table-header {
+  background: #f8f9fa;
+  font-weight: 700;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #6c757d;
+  border-bottom: 2px solid #dee2e6;
+}
+
+.table-row {
+  border-bottom: 1px solid #e9ecef;
+  transition: background-color 0.2s ease;
+}
+
+.table-row:hover {
+  background-color: #f8f9fa;
+}
+
+.table-footer {
+  background: #f8f9fa;
+  border-top: 2px solid #dee2e6;
+  font-weight: 700;
+}
+
+.col-category {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.category-indicator {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+.col-amount,
+.col-percentage {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.col-visual {
+  display: flex;
+  align-items: center;
+}
+
+.visual-bar {
+  width: 100%;
+  height: 20px;
+  background: #e9ecef;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.visual-fill {
+  height: 100%;
+  border-radius: 10px;
+  transition: width 0.3s ease;
+}
+
+.insights-panel {
+  background: white;
+  border-radius: 8px;
+  padding: 20px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.insights-panel h4 {
+  margin: 0 0 16px 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #1a1a2e;
+}
+
+.insights-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.insight-card {
+  display: flex;
+  gap: 12px;
+  padding: 16px;
+  background: #f8f9fa;
+  border-radius: 6px;
+  border-left: 4px solid #007bff;
+}
+
+.insight-icon {
+  font-size: 28px;
+  line-height: 1;
+}
+
+.insight-content {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+}
+
+.insight-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #1a1a2e;
+}
+
+.insight-text {
+  font-size: 13px;
+  color: #6c757d;
+  line-height: 1.5;
+}
+
+/* Responsive Design */
+@media (max-width: 1200px) {
+  .summary-cards {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .invested-capital {
+    padding: 12px;
+  }
+
+  .capital-header h3 {
+    font-size: 20px;
+  }
+
+  .summary-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .card-icon {
+    font-size: 24px;
+  }
+
+  .card-value {
+    font-size: 18px;
+  }
+
+  .chart-section {
+    padding: 12px;
+  }
+
+  .chart-section h4 {
+    font-size: 16px;
+  }
+
+  .allocation-table {
+    overflow-x: auto;
+  }
+
+  .table-header,
+  .table-row,
+  .table-footer {
+    grid-template-columns: 1.5fr 1fr 0.8fr 1.5fr;
+    gap: 8px;
+    padding: 10px 12px;
+    font-size: 12px;
+  }
+
+  .utilization-legend {
+    flex-direction: column;
+    gap: 8px;
+  }
+}
+
+/* Recharts customization */
+.recharts-wrapper {
+  margin: 0 auto;
+}
+
+.recharts-legend-wrapper {
+  padding-top: 10px;
+}
+
+.recharts-default-tooltip {
+  background: white !important;
+  border: 1px solid #dee2e6 !important;
+  border-radius: 6px !important;
+  padding: 8px 12px !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15) !important;
+}

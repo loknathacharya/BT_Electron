@@ -1,0 +1,131 @@
+/* Signal Type Selector Styles */
+
+.signal-type-selector {
+  background: #f8f9fa;
+  border: 1px solid #dee2e6;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.signal-type-selector .section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 16px 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #212529;
+}
+
+.signal-type-selector .section-title .icon {
+  font-size: 24px;
+}
+
+.signal-type-buttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.signal-type-button {
+  background: white;
+  border: 2px solid #dee2e6;
+  border-radius: 8px;
+  padding: 16px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: left;
+}
+
+.signal-type-button:hover {
+  border-color: #adb5bd;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+.signal-type-button.active {
+  border-width: 3px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.signal-type-button.long.active {
+  border-color: #28a745;
+  background: linear-gradient(135deg, #f1f9f3 0%, #ffffff 100%);
+}
+
+.signal-type-button.short.active {
+  border-color: #dc3545;
+  background: linear-gradient(135deg, #fdf1f3 0%, #ffffff 100%);
+}
+
+.button-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.button-icon {
+  font-size: 24px;
+}
+
+.button-label {
+  font-size: 16px;
+  font-weight: 600;
+  color: #212529;
+}
+
+.button-description {
+  font-size: 13px;
+  color: #6c757d;
+  margin-bottom: 12px;
+  font-weight: 500;
+}
+
+.button-details {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 12px;
+  border-top: 1px solid #e9ecef;
+}
+
+.detail-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.detail-label {
+  color: #6c757d;
+  font-weight: 500;
+}
+
+.detail-value {
+  color: #495057;
+  text-align: right;
+  flex: 1;
+}
+
+.signal-type-info {
+  background: white;
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.info-text {
+  margin: 0;
+  font-size: 13px;
+  color: #6c757d;
+  line-height: 1.5;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .signal-type-buttons {
+    grid-template-columns: 1fr;
+  }
+}

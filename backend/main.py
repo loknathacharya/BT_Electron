@@ -4157,6 +4157,286 @@ def handle_request(request, db_service_override=None):
                 print(f"BACKUP: Error updating config: {e}\n{traceback.format_exc()}", file=sys.stderr)
                 return {'error': f'update-backup-config failed: {e}', 'requestId': request_id}
         
+        # Phase 1: Enhanced Portfolio Backtest with Position Sizing and Signal Type
+        elif action == 'run-enhanced-portfolio-backtest':
+            try:
+                print(f"PORTFOLIO: Running enhanced portfolio backtest, requestId={request_id}", file=sys.stderr)
+                data = request.get('data', {})
+                
+                # Import required modules
+                from backend import portfolio_manager
+                
+                # Extract configuration
+                symbols = data.get('symbols', [])
+                if not symbols:
+                    return {'error': 'symbols list is required', 'requestId': request_id}
+                
+                initial_capital = float(data.get('initial_capital', 100000.0))
+                
+                # Position sizing configuration
+                position_sizing_config = data.get('position_sizing_config', {'method': 'equal_weight'})
+                
+                # Signal type (long or short)
+                signal_type = data.get('signal_type', 'long')
+                
+                # Risk management
+                stop_loss_pct = data.get('stop_loss_pct')
+                take_profit_pct = data.get('take_profit_pct')
+                holding_period_days = data.get('holding_period_days')
+                allow_leverage = data.get('allow_leverage', False)
+                one_trade_per_instrument = data.get('one_trade_per_instrument', False)
+                
+                # Get price data and signals from database
+                # For now, this is a placeholder - frontend will need to provide signals
+                # In a full implementation, signals would come from scanner results
+                price_data = {}
+                signals = {}
+                
+                # TODO: Fetch price data from database for each symbol
+                # TODO: Generate or retrieve signals for each symbol
+                
+                print(f"PORTFOLIO: symbols={len(symbols)}, signal_type={signal_type}, method={position_sizing_config.get('method')}", file=sys.stderr)
+                
+                # Run enhanced backtest
+                result = portfolio_manager.run_enhanced_portfolio_backtest(
+                    symbols=symbols,
+                    price_data=price_data,
+                    signals=signals,
+                    initial_capital=initial_capital,
+                    position_sizing_config=position_sizing_config,
+                    signal_type=signal_type,
+                    stop_loss_pct=stop_loss_pct,
+                    take_profit_pct=take_profit_pct,
+                    holding_period_days=holding_period_days,
+                    allow_leverage=allow_leverage,
+                    one_trade_per_instrument=one_trade_per_instrument
+                )
+                
+                result['requestId'] = request_id
+                return result
+                
+            except Exception as e:
+                import traceback
+                print(f"PORTFOLIO: Error in enhanced backtest: {e}\n{traceback.format_exc()}", file=sys.stderr)
+                return {'error': f'run-enhanced-portfolio-backtest failed: {e}', 'requestId': request_id}
+        
+        # Phase 1: Monte Carlo Simulation
+        elif action == 'run-monte-carlo':
+            try:
+                print(f"MONTE_CARLO: Running simulation, requestId={request_id}", file=sys.stderr)
+                data = request.get('data', {})
+                
+                from backend.trade_analytics import TradeAnalyzer
+                import pandas as pd
+                
+                # Extract trade returns
+                trade_returns = data.get('trade_returns', [])
+                if not trade_returns or len(trade_returns) < 10:
+                    return {
+                        'error': 'Insufficient trades for Monte Carlo (need at least 10)',
+                        'requestId': request_id
+                    }
+                
+                # Simulation parameters
+                n_simulations = int(data.get('n_simulations', 1000))
+                n_trades = int(data.get('n_trades', 50))
+                
+                # Validate parameters
+                if n_simulations < 100 or n_simulations > 10000:
+                    return {'error': 'n_simulations must be between 100 and 10000', 'requestId': request_id}
+                if n_trades < 10 or n_trades > 500:
+                    return {'error': 'n_trades must be between 10 and 500', 'requestId': request_id}
+                
+                print(f"MONTE_CARLO: n_simulations={n_simulations}, n_trades={n_trades}, trade_returns={len(trade_returns)}", file=sys.stderr)
+                
+                # Create minimal trade log for analyzer
+                trade_log = pd.DataFrame({
+                    'pnl_pct': trade_returns
+                })
+                
+                analyzer = TradeAnalyzer(trade_log)
+                mc_results = analyzer.run_monte_carlo(
+                    n_simulations=n_simulations,
+                    n_trades=n_trades
+                )
+                
+                mc_results['requestId'] = request_id
+                return mc_results
+                
+            except Exception as e:
+                import traceback
+                print(f"MONTE_CARLO: Error in simulation: {e}\n{traceback.format_exc()}", file=sys.stderr)
+                return {'error': f'run-monte-carlo failed: {e}', 'requestId': request_id}
+        
+        # Phase 4: Parameter Optimization
+        elif action == 'run-parameter-optimization':
+            try:
+                print(f"OPTIMIZATION: Starting parameter optimization, requestId={request_id}", file=sys.stderr)
+                data = request.get('data', {})
+                
+                from backend.parameter_optimizer import (
+                    generate_parameter_grid,
+                    apply_parameters_to_spec,
+                    rank_results,
+                    extract_best_parameters,
+                    calculate_optimization_stats
+                )
+                from backend.backtest_analytics import run_backtest
+                
+                # Extract configuration
+                scanner_spec = data.get('scannerSpec')
+                symbols = data.get('symbols', [])
+                base_config = data.get('baseConfig', {})
+                param_ranges = data.get('parameterRanges', {})
+                optimization_metric = data.get('metric', 'sharpe_ratio')
+                top_n = int(data.get('topN', 20))
+                
+                if not scanner_spec:
+                    return {'error': 'Scanner spec is required', 'requestId': request_id}
+                if not symbols:
+                    return {'error': 'At least one symbol is required', 'requestId': request_id}
+                if not param_ranges:
+                    return {'error': 'Parameter ranges are required', 'requestId': request_id}
+                
+                # Generate parameter grid
+                print(f"OPTIMIZATION: Generating parameter combinations...", file=sys.stderr)
+                parameter_combinations = generate_parameter_grid(param_ranges)
+                total_combinations = len(parameter_combinations)
+                
+                print(f"OPTIMIZATION: Running {total_combinations} backtests...", file=sys.stderr)
+                
+                # Run backtests for each parameter combination
+                all_results = []
+                successful_runs = 0
+                
+                for idx, params in enumerate(parameter_combinations):
+                    try:
+                        # Apply parameters to scanner spec
+                        parameterized_spec = apply_parameters_to_spec(scanner_spec, params)
+                        
+                        # Merge with base config
+                        backtest_config = {**base_config, **params}
+                        
+                        # Run backtest (simplified - single symbol for now)
+                        symbol = symbols[0] if len(symbols) == 1 else None
+                        if not symbol:
+                            # For multi-symbol, we'd need portfolio backtest integration
+                            print(f"OPTIMIZATION: Multi-symbol optimization not yet implemented", file=sys.stderr)
+                            continue
+                        
+                        # Run single backtest
+                        result = run_backtest(
+                            scanner_spec=parameterized_spec,
+                            symbol=symbol,
+                            initial_capital=backtest_config.get('initial_capital', 100000),
+                            position_size_pct=backtest_config.get('position_size_pct', 10),
+                            commission=backtest_config.get('commission', 0.001),
+                            slippage=backtest_config.get('slippage', 0.001)
+                        )
+                        
+                        if not result.get('error'):
+                            metrics = result.get('metrics', {})
+                            all_results.append({
+                                'parameters': params,
+                                'metrics': metrics,
+                                'trades': result.get('trades', [])
+                            })
+                            successful_runs += 1
+                        
+                        # Progress update (every 10 runs or at milestones)
+                        if (idx + 1) % 10 == 0 or (idx + 1) == total_combinations:
+                            progress_pct = ((idx + 1) / total_combinations) * 100
+                            print(f"OPTIMIZATION: Progress {idx + 1}/{total_combinations} ({progress_pct:.1f}%)", file=sys.stderr)
+                    
+                    except Exception as e:
+                        print(f"OPTIMIZATION: Error in combination {idx + 1}: {e}", file=sys.stderr)
+                        continue
+                
+                if not all_results:
+                    return {
+                        'error': 'No successful backtest runs',
+                        'requestId': request_id
+                    }
+                
+                # Rank results by optimization metric
+                ranked_results = rank_results(all_results, metric=optimization_metric, ascending=False)
+                
+                # Get top N results
+                top_results = extract_best_parameters(ranked_results, metric=optimization_metric, top_n=top_n)
+                
+                # Calculate statistics
+                stats = calculate_optimization_stats(ranked_results, metric=optimization_metric)
+                
+                print(f"OPTIMIZATION: Complete. {successful_runs}/{total_combinations} successful runs", file=sys.stderr)
+                
+                return {
+                    'topResults': top_results,
+                    'allResults': ranked_results[:50],  # Limit to 50 for performance
+                    'stats': stats,
+                    'totalCombinations': total_combinations,
+                    'successfulRuns': successful_runs,
+                    'requestId': request_id
+                }
+                
+            except Exception as e:
+                import traceback
+                print(f"OPTIMIZATION: Error: {e}\n{traceback.format_exc()}", file=sys.stderr)
+                return {'error': f'run-parameter-optimization failed: {e}', 'requestId': request_id}
+        
+        # Phase 1: Get Trade Analytics
+        elif action == 'get-trade-analytics':
+            try:
+                print(f"ANALYTICS: Getting trade analytics, requestId={request_id}", file=sys.stderr)
+                data = request.get('data', {})
+                
+                from backend.trade_analytics import TradeAnalyzer
+                import pandas as pd
+                
+                # Extract trade log
+                trades = data.get('trades', [])
+                if not trades:
+                    return {
+                        'error': 'No trades provided',
+                        'requestId': request_id
+                    }
+                
+                initial_capital = float(data.get('initial_capital', 100000.0))
+                
+                # Convert to DataFrame
+                trade_log = pd.DataFrame(trades)
+                
+                # Ensure required columns exist
+                required_columns = ['pnl', 'pnl_pct']
+                missing_columns = [col for col in required_columns if col not in trade_log.columns]
+                if missing_columns:
+                    return {
+                        'error': f'Missing required columns in trade log: {missing_columns}',
+                        'requestId': request_id
+                    }
+                
+                print(f"ANALYTICS: Analyzing {len(trades)} trades", file=sys.stderr)
+                
+                # Run analytics
+                analyzer = TradeAnalyzer(trade_log)
+                
+                result = {
+                    'metrics': analyzer.calculate_performance_metrics(initial_capital),
+                    'exit_reasons': analyzer.analyze_exit_reasons(),
+                    'holding_periods': analyzer.analyze_holding_periods(),
+                    'pl_distribution': analyzer.analyze_pl_distribution(),
+                    'pl_timeline': analyzer.get_pl_timeline(),
+                    'leverage_metrics': analyzer.calculate_leverage_metrics(initial_capital),
+                    'invested_capital_timeline': analyzer.calculate_invested_value_timeline(initial_capital),
+                    'requestId': request_id
+                }
+                
+                return result
+                
+            except Exception as e:
+                import traceback
+                print(f"ANALYTICS: Error in analysis: {e}\n{traceback.format_exc()}", file=sys.stderr)
+                return {'error': f'get-trade-analytics failed: {e}', 'requestId': request_id}
+        
         else:
             return {
                 'error': 'Unknown action',
