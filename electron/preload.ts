@@ -48,7 +48,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'run-walk-forward',
       'get-strategies',
       'save-strategy',
-      'get-price-data',
+  'get-price-data',
+  'analyze-data-quality',
       'get-backtest-results',
       // Backup & Recovery
       'create-backup',
