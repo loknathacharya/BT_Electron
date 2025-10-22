@@ -308,6 +308,63 @@ class DatabaseService:
                     )
                 ''')
 
+                # Signal strategies and signals tables (Scanner → Signals feature)
+                print("Creating signal_strategies and signals tables...", file=sys.stderr)
+                
+                conn.execute('''
+                    CREATE TABLE IF NOT EXISTS signal_strategies (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        description TEXT,
+                        conditions_json TEXT NOT NULL,
+                        default_direction TEXT NOT NULL,
+                        scope TEXT NOT NULL DEFAULT 'user',
+                        created_by TEXT NOT NULL DEFAULT 'default_user',
+                        created_at INTEGER NOT NULL,
+                        updated_at INTEGER NOT NULL,
+                        version INTEGER NOT NULL DEFAULT 1,
+                        metadata_json TEXT,
+                        UNIQUE(name, created_by)
+                    )
+                ''')
+                
+                conn.execute('CREATE INDEX IF NOT EXISTS idx_signal_strategies_created_by ON signal_strategies(created_by)')
+                conn.execute('CREATE INDEX IF NOT EXISTS idx_signal_strategies_scope ON signal_strategies(scope)')
+                conn.execute('CREATE INDEX IF NOT EXISTS idx_signal_strategies_name ON signal_strategies(name)')
+                
+                conn.execute('''
+                    CREATE TABLE IF NOT EXISTS signals (
+                        id TEXT PRIMARY KEY,
+                        strategy_id TEXT NOT NULL,
+                        dataset_name TEXT NOT NULL,
+                        symbol TEXT NOT NULL,
+                        timestamp TEXT NOT NULL,
+                        direction TEXT NOT NULL,
+                        entry_values_json TEXT NOT NULL,
+                        exit_criteria_json TEXT,
+                        status TEXT NOT NULL DEFAULT 'open',
+                        created_by TEXT NOT NULL DEFAULT 'default_user',
+                        created_at INTEGER NOT NULL,
+                        closed_at INTEGER,
+                        closed_by_signal_id TEXT,
+                        close_reason TEXT,
+                        historical INTEGER DEFAULT 0,
+                        metadata_json TEXT,
+                        FOREIGN KEY (strategy_id) REFERENCES signal_strategies(id) ON DELETE CASCADE
+                    )
+                ''')
+                
+                conn.execute('CREATE INDEX IF NOT EXISTS idx_signals_strategy ON signals(strategy_id)')
+                conn.execute('CREATE INDEX IF NOT EXISTS idx_signals_dataset ON signals(dataset_name)')
+                conn.execute('CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol)')
+                conn.execute('CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status)')
+                conn.execute('CREATE INDEX IF NOT EXISTS idx_signals_timestamp ON signals(timestamp)')
+                conn.execute('CREATE INDEX IF NOT EXISTS idx_signals_created_by ON signals(created_by)')
+                conn.execute('CREATE INDEX IF NOT EXISTS idx_signals_dataset_symbol ON signals(dataset_name, symbol)')
+                conn.execute('CREATE INDEX IF NOT EXISTS idx_signals_historical ON signals(historical)')
+                
+                print("Signal tables created successfully", file=sys.stderr)
+
                 # Verify tables were created
                 cursor = conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'")
                 table_count = cursor.fetchone()[0]
@@ -1091,6 +1148,507 @@ class DatabaseService:
             import traceback
             print(traceback.format_exc(), file=sys.stderr)
             return {'error': f'Failed to delete symbol list: {str(e)}', 'success': False}
+
+    # Dataset validation helpers for signals feature
+    def validate_dataset_exists(self, dataset_name: str) -> bool:
+        """Check if dataset exists in market_data.db.
+        
+        Returns:
+            True if dataset exists, False otherwise
+        """
+        try:
+            with sqlite3.connect(self.market_db_path) as conn:
+                cursor = conn.execute(
+                    'SELECT COUNT(*) FROM datasets WHERE name = ?',
+                    (dataset_name,)
+                )
+                count = cursor.fetchone()[0]
+                return count > 0
+        except Exception as e:
+            print(f"Error validating dataset: {e}", file=sys.stderr)
+            return False
+
+    def get_dataset_symbols(self, dataset_name: str) -> list[str]:
+        """Get all symbols available in a dataset.
+        
+        Used to validate symbol exists before creating signals.
+        """
+        try:
+            with sqlite3.connect(self.market_db_path) as conn:
+                cursor = conn.execute(
+                    'SELECT DISTINCT symbol FROM price_data WHERE dataset = ? ORDER BY symbol',
+                    (dataset_name,)
+                )
+                return [row[0] for row in cursor.fetchall()]
+        except Exception:
+            return []
+
+    # Signal Strategies CRUD operations
+    def create_signal_strategy(self, strategy_data: dict) -> dict:
+        """Create a new trading strategy for signals.
+        
+        Args:
+            strategy_data: {
+                'name': str,
+                'description': str (optional),
+                'conditions': {'entry': [str], 'exit': [str] (optional)},
+                'default_direction': 'long' | 'short' | 'auto',
+                'scope': 'user' | 'global' (default: 'user'),
+                'created_by': str (default: 'default_user'),
+                'metadata': dict (optional) - reversal_mode, exit_logic, etc.
+            }
+        
+        Returns:
+            {'success': True, 'strategy_id': str} or {'error': str}
+        """
+        import uuid
+        
+        try:
+            strategy_id = f"uuid_{uuid.uuid4().hex}"
+            name = strategy_data.get('name')
+            description = strategy_data.get('description', '')
+            conditions = strategy_data.get('conditions', {})
+            default_direction = strategy_data.get('default_direction', 'auto')
+            scope = strategy_data.get('scope', 'user')
+            created_by = strategy_data.get('created_by', 'default_user')
+            metadata = strategy_data.get('metadata', {})
+            
+            # Validation
+            if not name:
+                return {'error': 'Strategy name is required'}
+            if not conditions.get('entry'):
+                return {'error': 'Entry conditions are required'}
+            if default_direction not in ['long', 'short', 'auto']:
+                return {'error': 'Invalid default_direction'}
+            if scope not in ['user', 'global']:
+                return {'error': 'Invalid scope'}
+            
+            now = int(time.time())
+            
+            with sqlite3.connect(self.user_db_path) as conn:
+                conn.execute('''
+                    INSERT INTO signal_strategies 
+                    (id, name, description, conditions_json, default_direction, 
+                     scope, created_by, created_at, updated_at, version, metadata_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    strategy_id, name, description, 
+                    json.dumps(conditions), default_direction,
+                    scope, created_by, now, now, 1,
+                    json.dumps(metadata)
+                ))
+                conn.commit()
+            
+            return {'success': True, 'strategy_id': strategy_id}
+            
+        except sqlite3.IntegrityError as e:
+            if 'UNIQUE' in str(e):
+                return {'error': f'Strategy name "{name}" already exists for this user'}
+            return {'error': str(e)}
+        except Exception as e:
+            return {'error': str(e)}
+
+    def get_signal_strategies(self, created_by: str = None, scope: str = None) -> dict:
+        """List all signal strategies with optional filters."""
+        try:
+            with sqlite3.connect(self.user_db_path) as conn:
+                query = 'SELECT * FROM signal_strategies WHERE 1=1'
+                params = []
+                
+                if created_by:
+                    query += ' AND created_by = ?'
+                    params.append(created_by)
+                if scope:
+                    query += ' AND scope = ?'
+                    params.append(scope)
+                
+                query += ' ORDER BY updated_at DESC'
+                
+                cursor = conn.execute(query, params)
+                columns = [desc[0] for desc in cursor.description]
+                
+                strategies = []
+                for row in cursor.fetchall():
+                    strategy = dict(zip(columns, row))
+                    # Parse JSON fields
+                    strategy['conditions'] = json.loads(strategy['conditions_json'])
+                    strategy['metadata'] = json.loads(strategy['metadata_json'] or '{}')
+                    strategies.append(strategy)
+                
+                return {'success': True, 'strategies': strategies, 'count': len(strategies)}
+        except Exception as e:
+            return {'error': str(e)}
+
+    def get_signal_strategy(self, strategy_id: str) -> dict:
+        """Get single signal strategy by ID."""
+        try:
+            with sqlite3.connect(self.user_db_path) as conn:
+                cursor = conn.execute(
+                    'SELECT * FROM signal_strategies WHERE id = ?',
+                    (strategy_id,)
+                )
+                row = cursor.fetchone()
+                
+                if not row:
+                    return {'error': 'Strategy not found'}
+                
+                columns = [desc[0] for desc in cursor.description]
+                strategy = dict(zip(columns, row))
+                strategy['conditions'] = json.loads(strategy['conditions_json'])
+                strategy['metadata'] = json.loads(strategy['metadata_json'] or '{}')
+                
+                return {'success': True, 'strategy': strategy}
+        except Exception as e:
+            return {'error': str(e)}
+
+    def update_signal_strategy(self, strategy_id: str, updates: dict) -> dict:
+        """Update signal strategy (increments version)."""
+        try:
+            with sqlite3.connect(self.user_db_path) as conn:
+                # First check if exists
+                cursor = conn.execute(
+                    'SELECT version FROM signal_strategies WHERE id = ?',
+                    (strategy_id,)
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return {'error': 'Strategy not found'}
+                
+                current_version = row[0]
+                new_version = current_version + 1
+                now = int(time.time())
+                
+                # Build update query dynamically
+                set_clauses = ['updated_at = ?', 'version = ?']
+                params = [now, new_version]
+                
+                if 'name' in updates:
+                    set_clauses.append('name = ?')
+                    params.append(updates['name'])
+                if 'description' in updates:
+                    set_clauses.append('description = ?')
+                    params.append(updates['description'])
+                if 'conditions' in updates:
+                    set_clauses.append('conditions_json = ?')
+                    params.append(json.dumps(updates['conditions']))
+                if 'default_direction' in updates:
+                    set_clauses.append('default_direction = ?')
+                    params.append(updates['default_direction'])
+                if 'metadata' in updates:
+                    set_clauses.append('metadata_json = ?')
+                    params.append(json.dumps(updates['metadata']))
+                
+                params.append(strategy_id)
+                
+                query = f"UPDATE signal_strategies SET {', '.join(set_clauses)} WHERE id = ?"
+                conn.execute(query, params)
+                conn.commit()
+                
+                return {'success': True, 'version': new_version}
+                
+        except sqlite3.IntegrityError as e:
+            if 'UNIQUE' in str(e):
+                return {'error': 'Strategy name already exists for this user'}
+            return {'error': str(e)}
+        except Exception as e:
+            return {'error': str(e)}
+
+    def delete_signal_strategy(self, strategy_id: str) -> dict:
+        """Delete signal strategy (cascades to signals)."""
+        try:
+            with sqlite3.connect(self.user_db_path) as conn:
+                cursor = conn.execute(
+                    'DELETE FROM signal_strategies WHERE id = ?',
+                    (strategy_id,)
+                )
+                
+                if cursor.rowcount == 0:
+                    return {'error': 'Strategy not found'}
+                
+                conn.commit()
+                return {'success': True, 'deleted': strategy_id}
+        except Exception as e:
+            return {'error': str(e)}
+
+    # Signals CRUD operations
+    def create_signal(self, signal_data: dict) -> dict:
+        """Create a new signal from scanner result.
+        
+        Args:
+            signal_data: {
+                'strategy_id': str,
+                'dataset_name': str,
+                'symbol': str,
+                'timestamp': str (ISO8601),
+                'direction': 'long' | 'short',
+                'entry_values': dict,  # indicator snapshots
+                'exit_criteria': [str] (optional),
+                'created_by': str (default: 'default_user'),
+                'historical': bool (default: False),
+                'metadata': dict (optional)
+            }
+        
+        Returns:
+            {'success': True, 'signal_id': str} or {'error': str}
+        """
+        import uuid
+        
+        try:
+            # Validation
+            strategy_id = signal_data.get('strategy_id')
+            dataset_name = signal_data.get('dataset_name')
+            symbol = signal_data.get('symbol')
+            timestamp = signal_data.get('timestamp')
+            direction = signal_data.get('direction')
+            entry_values = signal_data.get('entry_values', {})
+            
+            if not all([strategy_id, dataset_name, symbol, timestamp, direction]):
+                return {'error': 'Missing required fields'}
+            
+            # Validate strategy exists
+            strategy_result = self.get_signal_strategy(strategy_id)
+            if 'error' in strategy_result:
+                return {'error': f'Invalid strategy_id: {strategy_result["error"]}'}
+            
+            # Validate dataset exists (application-layer FK)
+            if not self.validate_dataset_exists(dataset_name):
+                return {'error': f'Dataset "{dataset_name}" not found'}
+            
+            # Validate symbol exists in dataset (optional but recommended)
+            dataset_symbols = self.get_dataset_symbols(dataset_name)
+            if dataset_symbols and symbol not in dataset_symbols:
+                return {'error': f'Symbol "{symbol}" not found in dataset "{dataset_name}"'}
+            
+            if direction not in ['long', 'short']:
+                return {'error': 'Invalid direction (must be "long" or "short")'}
+            
+            signal_id = f"uuid_{uuid.uuid4().hex}"
+            created_by = signal_data.get('created_by', 'default_user')
+            exit_criteria = signal_data.get('exit_criteria', [])
+            historical = 1 if signal_data.get('historical', False) else 0
+            metadata = signal_data.get('metadata', {})
+            now = int(time.time())
+            
+            with sqlite3.connect(self.user_db_path) as conn:
+                conn.execute('''
+                    INSERT INTO signals 
+                    (id, strategy_id, dataset_name, symbol, timestamp, direction,
+                     entry_values_json, exit_criteria_json, status, created_by,
+                     created_at, historical, metadata_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    signal_id, strategy_id, dataset_name, symbol, timestamp, direction,
+                    json.dumps(entry_values), json.dumps(exit_criteria),
+                    'open', created_by, now, historical, json.dumps(metadata)
+                ))
+                conn.commit()
+            
+            return {'success': True, 'signal_id': signal_id}
+            
+        except Exception as e:
+            return {'error': str(e)}
+
+    def get_signals(self, filters: dict = None) -> dict:
+        """List signals with filters: dataset, symbol, strategy_id, status, date range.
+        
+        Args:
+            filters: {
+                'dataset_name': str (optional),
+                'symbol': str (optional),
+                'strategy_id': str (optional),
+                'status': str (optional) - 'open', 'closed', 'cancelled',
+                'created_by': str (optional),
+                'historical': bool (optional),
+                'start_date': int (optional) - Unix timestamp,
+                'end_date': int (optional) - Unix timestamp,
+                'limit': int (optional) - default 100,
+                'offset': int (optional) - default 0
+            }
+        
+        Returns:
+            {'success': True, 'signals': [...], 'count': int, 'total': int}
+        """
+        try:
+            filters = filters or {}
+            
+            with sqlite3.connect(self.user_db_path) as conn:
+                query = 'SELECT * FROM signals WHERE 1=1'
+                params = []
+                
+                if filters.get('dataset_name'):
+                    query += ' AND dataset_name = ?'
+                    params.append(filters['dataset_name'])
+                if filters.get('symbol'):
+                    query += ' AND symbol = ?'
+                    params.append(filters['symbol'])
+                if filters.get('strategy_id'):
+                    query += ' AND strategy_id = ?'
+                    params.append(filters['strategy_id'])
+                if filters.get('status'):
+                    query += ' AND status = ?'
+                    params.append(filters['status'])
+                if filters.get('created_by'):
+                    query += ' AND created_by = ?'
+                    params.append(filters['created_by'])
+                if 'historical' in filters:
+                    historical_val = 1 if filters['historical'] else 0
+                    query += ' AND historical = ?'
+                    params.append(historical_val)
+                if filters.get('start_date'):
+                    query += ' AND created_at >= ?'
+                    params.append(filters['start_date'])
+                if filters.get('end_date'):
+                    query += ' AND created_at <= ?'
+                    params.append(filters['end_date'])
+                
+                # Get total count before pagination
+                count_query = query.replace('SELECT *', 'SELECT COUNT(*)')
+                cursor = conn.execute(count_query, params)
+                total = cursor.fetchone()[0]
+                
+                # Add sorting and pagination
+                query += ' ORDER BY created_at DESC'
+                limit = filters.get('limit', 100)
+                offset = filters.get('offset', 0)
+                query += ' LIMIT ? OFFSET ?'
+                params.extend([limit, offset])
+                
+                cursor = conn.execute(query, params)
+                columns = [desc[0] for desc in cursor.description]
+                
+                signals = []
+                for row in cursor.fetchall():
+                    signal = dict(zip(columns, row))
+                    # Parse JSON fields
+                    signal['entry_values'] = json.loads(signal['entry_values_json'])
+                    signal['exit_criteria'] = json.loads(signal['exit_criteria_json'] or '[]')
+                    signal['metadata'] = json.loads(signal['metadata_json'] or '{}')
+                    # Convert historical INTEGER to boolean
+                    signal['historical'] = bool(signal['historical'])
+                    signals.append(signal)
+                
+                return {
+                    'success': True,
+                    'signals': signals,
+                    'count': len(signals),
+                    'total': total
+                }
+        except Exception as e:
+            return {'error': str(e)}
+
+    def get_signal(self, signal_id: str) -> dict:
+        """Get single signal by ID."""
+        try:
+            with sqlite3.connect(self.user_db_path) as conn:
+                cursor = conn.execute(
+                    'SELECT * FROM signals WHERE id = ?',
+                    (signal_id,)
+                )
+                row = cursor.fetchone()
+                
+                if not row:
+                    return {'error': 'Signal not found'}
+                
+                columns = [desc[0] for desc in cursor.description]
+                signal = dict(zip(columns, row))
+                signal['entry_values'] = json.loads(signal['entry_values_json'])
+                signal['exit_criteria'] = json.loads(signal['exit_criteria_json'] or '[]')
+                signal['metadata'] = json.loads(signal['metadata_json'] or '{}')
+                signal['historical'] = bool(signal['historical'])
+                
+                return {'success': True, 'signal': signal}
+        except Exception as e:
+            return {'error': str(e)}
+
+    def update_signal(self, signal_id: str, updates: dict) -> dict:
+        """Update signal (e.g., add/edit exit criteria).
+        
+        Args:
+            updates: {
+                'exit_criteria': [str] (optional),
+                'metadata': dict (optional)
+            }
+        """
+        try:
+            with sqlite3.connect(self.user_db_path) as conn:
+                # Check if exists
+                cursor = conn.execute('SELECT id FROM signals WHERE id = ?', (signal_id,))
+                if not cursor.fetchone():
+                    return {'error': 'Signal not found'}
+                
+                set_clauses = []
+                params = []
+                
+                if 'exit_criteria' in updates:
+                    set_clauses.append('exit_criteria_json = ?')
+                    params.append(json.dumps(updates['exit_criteria']))
+                if 'metadata' in updates:
+                    set_clauses.append('metadata_json = ?')
+                    params.append(json.dumps(updates['metadata']))
+                
+                if not set_clauses:
+                    return {'error': 'No valid fields to update'}
+                
+                params.append(signal_id)
+                query = f"UPDATE signals SET {', '.join(set_clauses)} WHERE id = ?"
+                conn.execute(query, params)
+                conn.commit()
+                
+                return {'success': True}
+        except Exception as e:
+            return {'error': str(e)}
+
+    def close_signal(self, signal_id: str, reason: str, closed_by_signal_id: str = None) -> dict:
+        """Close a signal manually or via monitoring engine.
+        
+        Args:
+            signal_id: Signal to close
+            reason: 'manual' | 'exit_condition' | 'reversal'
+            closed_by_signal_id: Optional reversal signal ID
+        """
+        try:
+            with sqlite3.connect(self.user_db_path) as conn:
+                # Check if exists and is open
+                cursor = conn.execute(
+                    'SELECT status FROM signals WHERE id = ?',
+                    (signal_id,)
+                )
+                row = cursor.fetchone()
+                
+                if not row:
+                    return {'error': 'Signal not found'}
+                if row[0] != 'open':
+                    return {'error': f'Signal is already {row[0]}'}
+                
+                now = int(time.time())
+                
+                conn.execute('''
+                    UPDATE signals 
+                    SET status = ?, closed_at = ?, close_reason = ?, closed_by_signal_id = ?
+                    WHERE id = ?
+                ''', ('closed', now, reason, closed_by_signal_id, signal_id))
+                conn.commit()
+                
+                return {'success': True, 'closed_at': now}
+        except Exception as e:
+            return {'error': str(e)}
+
+    def delete_signal(self, signal_id: str) -> dict:
+        """Delete signal record."""
+        try:
+            with sqlite3.connect(self.user_db_path) as conn:
+                cursor = conn.execute(
+                    'DELETE FROM signals WHERE id = ?',
+                    (signal_id,)
+                )
+                
+                if cursor.rowcount == 0:
+                    return {'error': 'Signal not found'}
+                
+                conn.commit()
+                return {'success': True, 'deleted': signal_id}
+        except Exception as e:
+            return {'error': str(e)}
 
     def import_symbol_list_from_csv(self, name: str, dataset_name: str, csv_content: str, description: str = '') -> dict:
         """Import symbol list from CSV content"""
@@ -2408,6 +2966,149 @@ def handle_request(request, db_service_override=None):
                 return result
             except Exception as e:
                 return {'error': f'Failed to delete watchlist: {e}', 'requestId': request_id}
+        
+        # Signal Strategies endpoints
+        elif request.get('action') == 'create_signal_strategy':
+            try:
+                data = request.get('data', {}) or {}
+                result = current_db_service.create_signal_strategy(data)
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to create signal strategy: {e}', 'requestId': request_id}
+        elif request.get('action') == 'get_signal_strategies':
+            try:
+                data = request.get('data', {}) or {}
+                created_by = data.get('created_by')
+                scope = data.get('scope')
+                result = current_db_service.get_signal_strategies(created_by, scope)
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to get signal strategies: {e}', 'requestId': request_id}
+        elif request.get('action') == 'get_signal_strategy':
+            try:
+                data = request.get('data', {}) or {}
+                strategy_id = data.get('strategy_id')
+                if not strategy_id:
+                    return {'error': 'strategy_id is required', 'requestId': request_id}
+                result = current_db_service.get_signal_strategy(strategy_id)
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to get signal strategy: {e}', 'requestId': request_id}
+        elif request.get('action') == 'update_signal_strategy':
+            try:
+                data = request.get('data', {}) or {}
+                strategy_id = data.get('strategy_id')
+                updates = data.get('updates', {})
+                if not strategy_id:
+                    return {'error': 'strategy_id is required', 'requestId': request_id}
+                result = current_db_service.update_signal_strategy(strategy_id, updates)
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to update signal strategy: {e}', 'requestId': request_id}
+        elif request.get('action') == 'delete_signal_strategy':
+            try:
+                data = request.get('data', {}) or {}
+                strategy_id = data.get('strategy_id')
+                if not strategy_id:
+                    return {'error': 'strategy_id is required', 'requestId': request_id}
+                result = current_db_service.delete_signal_strategy(strategy_id)
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to delete signal strategy: {e}', 'requestId': request_id}
+        
+        # Signals endpoints
+        elif request.get('action') == 'create_signal':
+            try:
+                data = request.get('data', {}) or {}
+                result = current_db_service.create_signal(data)
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to create signal: {e}', 'requestId': request_id}
+        elif request.get('action') == 'get_signals':
+            try:
+                data = request.get('data', {}) or {}
+                filters = data.get('filters', {})
+                result = current_db_service.get_signals(filters)
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to get signals: {e}', 'requestId': request_id}
+        elif request.get('action') == 'get_signal':
+            try:
+                data = request.get('data', {}) or {}
+                signal_id = data.get('signal_id')
+                if not signal_id:
+                    return {'error': 'signal_id is required', 'requestId': request_id}
+                result = current_db_service.get_signal(signal_id)
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to get signal: {e}', 'requestId': request_id}
+        elif request.get('action') == 'update_signal':
+            try:
+                data = request.get('data', {}) or {}
+                signal_id = data.get('signal_id')
+                updates = data.get('updates', {})
+                if not signal_id:
+                    return {'error': 'signal_id is required', 'requestId': request_id}
+                result = current_db_service.update_signal(signal_id, updates)
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to update signal: {e}', 'requestId': request_id}
+        elif request.get('action') == 'close_signal':
+            try:
+                data = request.get('data', {}) or {}
+                signal_id = data.get('signal_id')
+                reason = data.get('reason', 'manual')
+                closed_by_signal_id = data.get('closed_by_signal_id')
+                if not signal_id:
+                    return {'error': 'signal_id is required', 'requestId': request_id}
+                result = current_db_service.close_signal(signal_id, reason, closed_by_signal_id)
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to close signal: {e}', 'requestId': request_id}
+        elif request.get('action') == 'delete_signal':
+            try:
+                data = request.get('data', {}) or {}
+                signal_id = data.get('signal_id')
+                if not signal_id:
+                    return {'error': 'signal_id is required', 'requestId': request_id}
+                result = current_db_service.delete_signal(signal_id)
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to delete signal: {e}', 'requestId': request_id}
+        
+        # Dataset validation helpers
+        elif request.get('action') == 'validate_dataset_exists':
+            try:
+                data = request.get('data', {}) or {}
+                dataset_name = data.get('dataset_name')
+                if not dataset_name:
+                    return {'error': 'dataset_name is required', 'requestId': request_id}
+                exists = current_db_service.validate_dataset_exists(dataset_name)
+                return {'success': True, 'exists': exists, 'requestId': request_id}
+            except Exception as e:
+                return {'error': f'Failed to validate dataset: {e}', 'requestId': request_id}
+        elif request.get('action') == 'get_dataset_symbols':
+            try:
+                data = request.get('data', {}) or {}
+                dataset_name = data.get('dataset_name')
+                if not dataset_name:
+                    return {'error': 'dataset_name is required', 'requestId': request_id}
+                symbols = current_db_service.get_dataset_symbols(dataset_name)
+                return {'success': True, 'symbols': symbols, 'requestId': request_id}
+            except Exception as e:
+                return {'error': f'Failed to get dataset symbols: {e}', 'requestId': request_id}
+        
         elif request.get('action') == 'get-dataset':
             """Get specific dataset by name"""
             try:

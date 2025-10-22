@@ -1,0 +1,239 @@
+# Scanner → Signals — Specification
+
+## Overview
+
+Convert scanner results into persistent **signals** that users can save, manage, and reuse across datasets. A *signal* is an actionable record derived from a scanner hit that represents an intent to enter and/or exit a trade. Each strategy that produces signals must have a unique identifier and be available across datasets.
+
+Goals:
+
+* Turn transient scanner hits into saved signals.
+* Let users define entry-only signals (default) or entry+exit rules.
+* Support simple single-indicator strategies and complex multi-indicator strategies.
+* Allow exits to be defined as one or more conditions; support automatic conversion between positions on reversal signals.
+* Make strategies reusable across datasets and uniquely identifiable.
+
+---
+
+## Key Concepts
+
+* **Scanner Result**: A row/item emitted by a running scanner (symbol, timestamp, indicator values, metadata).
+* **Signal**: A saved object created from a scanner result representing an entry and optional exit criteria.
+* **Strategy**: The rule definition used to generate signals (e.g., `RSI > 70`, `SMA20 crosses SMA50`). Has a unique `strategyId`.
+* **Entry Mode**: `entry-only` (default) or `entry+exit`.
+* **Exit Condition**: One or more boolean expressions (single indicator or composite) that mark when to close a position.
+* **Position Direction**: `long` or `short` (derived from entry rule or user selection).
+
+---
+
+## Data Model
+
+### Strategy
+
+```json
+{
+  "strategyId": "string (uuid)",
+  "name": "string",
+  "description": "string",
+  "conditions": {
+    "entry": ["expression"],        // list of expressions to evaluate for entry
+    "exit": ["expression"]          // optional list for exit
+  },
+  "defaultDirection": "long|short|auto", // auto: inferred from condition
+  "scope": "global|user",
+  "createdBy": "userId",
+  "createdAt": "ISO8601",
+  "version": 1
+}
+```
+
+### Signal
+
+```json
+{
+  "signalId": "string (uuid)",
+  "strategyId": "string",
+  "datasetId": "string",         // dataset / data source that produced the scanner hit
+  "symbol": "string",
+  "timestamp": "ISO8601",
+  "direction": "long|short",
+  "entryValues": { ... },         // snapshot of indicator values / price at creation
+  "exitCriteria": ["expression"],// copied from strategy or user-edited
+  "status": "open|closed|cancelled",
+  "createdBy": "userId",
+  "createdAt": "ISO8601",
+  "closedAt": "ISO8601|null",
+  "closedBySignalId": "string|null" // if closed due to reversal into opposite signal
+}
+```
+
+Notes:
+
+* Signals store a snapshot of all relevant indicator values at creation time to make later analysis deterministic.
+* `closedBySignalId` is used when a reversal triggers an automatic exit and entry (see behavior rules).
+
+---
+
+## Expressions / Condition Syntax
+
+* Use a simple expression language already used by the scanner (examples below). Expressions evaluate to boolean.
+* Examples:
+
+  * `RSI(14) > 70`
+  * `SMA(close, 20) crosses_above SMA(close, 50)`
+  * `(RSI(14) < 30) and (close > SMA(close, 50))`
+* The system must allow combining expressions with `and`, `or`, parentheses, and comparison operators.
+
+---
+
+## Behavior Rules
+
+### Default: Entry-only
+
+* When user chooses default behavior, the scanner result becomes a **saved entry signal** with no exit criteria.
+* `status` = `open` until user manually closes it or supplies exit conditions later.
+
+### Entry + Exit
+
+* If the user defines exit criteria at creation, they are saved to `exitCriteria` and the signal will be monitored for those conditions.
+* Exit criteria can be one or more expressions. By default multiple expressions are interpreted as **logical OR** (i.e., exit when any of them is true). Offer an advanced option to choose `any (OR)` vs `all (AND)` semantics.
+
+### Single-indicator reversal handling (automatic conversion)
+
+* Example: `RSI > 70` configured as `short` entry.
+
+  * When `RSI <= 70` and a defined reversal rule exists (e.g., `RSI < 30` or `RSI crosses below 30`), the system should support an automated flow: close the short (create `closedAt`, `status=closed`) **and** optionally create a new `long` signal (entry) for the same timestamp.
+* Behavior should be configurable per strategy:
+
+  * `no-auto-reversal` (default): only close on exit; do not auto-enter opposite direction.
+  * `auto-reversal-to-opposite`: close and auto-create opposite signal when reversal condition triggers.
+  * `auto-reversal-with-confirmation`: mark the exit and queue the opposite entry as a pending signal requiring user confirmation.
+
+### Multi-indicator strategies
+
+* A strategy with multiple indicators (e.g., `RSI > 70` **and** `SMA20 < SMA50`) can have exit criteria referencing any of the involved indicators or new ones.
+* Exits may be defined as single expressions or composite expressions that evaluate over multiple indicators.
+* The system must support evaluating all referenced indicators for the dataset's timeframe and symbol.
+
+---
+
+## UI / UX
+
+### From Scanner -> Save Signal Flow
+
+1. **Scanner results list**: each row has a `Save as Signal` button.
+2. Clicking the button opens a compact **Save Signal** modal pre-filled with:
+
+   * `strategyId` (if scanner is tied to a saved strategy), name
+   * detected `direction` (inferred)
+   * snapshot of indicator values
+   * toggle: `Include exit criteria?` (unchecked by default)
+   * optional `exit criteria` editor (expression builder)
+   * radio: `Behavior on reversal` with options (`no-auto-reversal`, `auto-reversal-to-opposite`, `auto-reversal-with-confirmation`)
+   * Save / Cancel
+3. On Save: create `signal` record, subscribe the signal to the monitoring engine (if exits defined).
+
+### Signal List / Management
+
+* Users can view all saved signals (filter by dataset, symbol, strategy, status, date range).
+* Can edit exit criteria for open signals.
+* Can close signals manually (add close timestamp and reason).
+* Audit trail: show which scanner and strategy created the signal and any automated actions performed.
+
+---
+
+## APIs / Endpoints (suggested)
+
+* `POST /strategies` — create strategy
+* `GET /strategies` — list strategies (global + user)
+* `GET /strategies/{id}` — get strategy
+* `POST /signals` — create signal from scanner result
+* `GET /signals` — list signals with filters
+* `GET /signals/{id}` — get signal
+* `PATCH /signals/{id}` — edit signal (e.g., add exit criteria)
+* `POST /signals/{id}/close` — close signal manually with reason
+
+Payloads should follow the Data Model above.
+
+---
+
+## Monitoring & Evaluation
+
+* A **monitoring engine** evaluates active signals against their exit criteria in near-real-time (or on-demand backtests for historical signals).
+* When an exit condition becomes true, the engine records `closedAt` and updates `status` to `closed`.
+* If `auto-reversal-to-opposite` is enabled and the exit is the logical reversal, the engine creates a new `signal` with `direction` flipped and links it via `closedBySignalId`.
+
+---
+
+## Persistence & Cross-dataset Availability
+
+* Strategies are global objects identified by `strategyId`. When a user saves a signal from any dataset, link the created signal to both the `strategyId` and the `datasetId` so a single strategy can be reused across many datasets.
+* Dataset-specific overrides: allow users to save a copy of a strategy scoped to a dataset when they want dataset-specific parameter tweaks.
+
+---
+
+## Validation, Edge Cases & Rules
+
+* Validate expression syntax at creation time and reject invalid expressions with helpful errors.
+
+* If a scanner result lacks required indicator values for a given expression, present a warning and allow saving as entry-only.
+
+* Race conditions: ensure the monitoring engine locks signal evaluation so a signal cannot be closed twice by concurrent checks.
+
+* Timezones: store timestamps in UTC, display in user locale.
+
+* Backfill & Full-History Backtesting: allow historical signals to be generated from past scanner runs but mark them as `historical`. **Crucially, support running the strategy across *all available historical data*** for the symbol/dataset to enable deterministic backtests. Implementation notes:
+
+* Provide a "Run across history" mode that evaluates the strategy over the full available time-range for a dataset (not just the scanner run window).
+
+* Results should produce saved signals for each historical trigger (with `status` = `closed` or `open` depending on whether an exit condition is met within the historical window), plus performance metrics (entry/exit timestamps, P&L, duration).
+
+* Support batching, pagination, and parallel processing when datasets are large; include progress reporting and the ability to resume.
+
+* Store historical-run metadata (start/end timestamps, dataset snapshot id, parameters used) and mark signals as `historical=true`.
+
+* Allow users to export historical signal runs (CSV / JSON) and to reproduce/backfill results deterministically by referencing the dataset snapshot id and strategy version.
+
+* Performance considerations: precompute or cache indicator series where possible; perform evaluation in the dataset's native timeframe to avoid resampling errors.
+
+---
+
+## Testing & Acceptance Criteria
+
+* Unit tests for expression parsing and evaluation.
+* Integration tests for scanner → save signal → monitor → close flow (including auto-reversal flows).
+* UI tests for Save Signal modal and Signal list CRUD.
+* Manual acceptance: create a sample RSI single-indicator strategy and prove that:
+
+  * `entry-only` signals are saved and remain open until manual close
+  * `entry+exit` signals close when exit expression becomes true
+  * `auto-reversal-to-opposite` closes and creates opposite signals when reversal triggers
+
+---
+
+## Example Use Cases
+
+### 1) Single-indicator short with auto-exit & reversal
+
+* Strategy: `RSI(14) > 70` (short)
+* Exit: `RSI(14) < 50`
+* Auto-reversal: `auto-reversal-to-opposite`
+* Behavior: when RSI falls below 50, close short and create a long signal if configured.
+
+### 2) Multi-indicator entry and composite exit
+
+* Strategy entry: `RSI(14) > 70 AND SMA(close, 20) < SMA(close, 50)` (short)
+* Exit: `(RSI(14) < 40) OR (SMA20 crosses_above SMA50)`
+* Behavior: signal closes when either exit condition is met.
+
+---
+
+## Future Enhancements (not required initially)
+
+* Backtest signals across historical data.
+* Signal tagging, notes, and linking to trades in a journal.
+* Visual timeline showing when signals triggered and when they closed.
+* Alerting: push notifications, email, or webhook when signals are created/closed.
+
+---
+
+*Document created for implementation planning. Adjust fields and flow to fit existing scanner and expression-evaluation subsystems.*
