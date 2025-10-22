@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import './PortfolioBacktest.css';
 import {
   PortfolioEquityCurve,
@@ -18,13 +18,14 @@ import { MonteCarloSimulation } from './MonteCarloSimulation/MonteCarloSimulatio
 import { LeverageAnalysis } from './LeverageAnalysis/LeverageAnalysis';
 import { InvestedCapital } from './InvestedCapital/InvestedCapital';
 import { ParameterOptimization } from './ParameterOptimization/ParameterOptimization';
-import { 
-  PositionSizingMethod, 
-  RiskManagementConfig, 
+import {
+  PositionSizingMethod,
+  RiskManagementConfig,
   TradeAnalytics,
   LeverageMetrics,
   InvestedCapitalPoint
 } from '../types/portfolio';
+import SymbolListSelector from './SymbolListSelector';
 
 interface PortfolioBacktestProps {
   scannerSpec: any;
@@ -85,6 +86,13 @@ interface PortfolioResults {
 }
 
 const PortfolioBacktest: React.FC<PortfolioBacktestProps> = ({ scannerSpec }) => {
+  // Symbol List Integration State
+  const [datasets, setDatasets] = useState<any[]>([]);
+  const [selectedDataset, setSelectedDataset] = useState<string | null>(null);
+  const [selectedSymbolList, setSelectedSymbolList] = useState<string | null>(null);
+  const [portfolioSymbols, setPortfolioSymbols] = useState<string[]>([]);
+  const [useSymbolList, setUseSymbolList] = useState(false);
+
   const [symbols, setSymbols] = useState<string[]>(['']);
   const [backtestConfig, setBacktestConfig] = useState<BacktestConfig>({
     initial_capital: 10000,
@@ -125,6 +133,26 @@ const PortfolioBacktest: React.FC<PortfolioBacktestProps> = ({ scannerSpec }) =>
   });
 
   const [activeResultsTab, setActiveResultsTab] = useState<'overview' | 'invested' | 'trades' | 'analytics' | 'monte-carlo' | 'leverage' | 'optimization'>('overview');
+
+  // Load datasets on component mount
+  useEffect(() => {
+    const loadDatasets = async () => {
+      try {
+        const result = await window.electronAPI.invoke('get-all-datasets', {});
+        if (!result.error && result.datasets) {
+          setDatasets(result.datasets);
+          // Auto-select first dataset if available
+          if (result.datasets.length > 0) {
+            setSelectedDataset(result.datasets[0].name);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to load datasets:', error);
+      }
+    };
+
+    loadDatasets();
+  }, []);
 
   const addSymbol = () => {
     setSymbols([...symbols, '']);
@@ -187,10 +215,26 @@ const PortfolioBacktest: React.FC<PortfolioBacktestProps> = ({ scannerSpec }) =>
   };
 
   const runPortfolioBacktest = async () => {
-    const validSymbols = symbols.filter(s => s.trim());
-    
+    let validSymbols: string[];
+
+    if (useSymbolList) {
+      if (!selectedDataset) {
+        setError('Please select a dataset');
+        return;
+      }
+
+      if (!selectedSymbolList) {
+        setError('Please select a symbol list');
+        return;
+      }
+
+      validSymbols = portfolioSymbols;
+    } else {
+      validSymbols = symbols.filter(s => s.trim());
+    }
+
     if (validSymbols.length === 0) {
-      setError('Please add at least one symbol');
+      setError('Please add at least one symbol or select a symbol list');
       return;
     }
 
@@ -219,6 +263,7 @@ const PortfolioBacktest: React.FC<PortfolioBacktestProps> = ({ scannerSpec }) =>
         positionSizingConfig,
         signalType,
         riskManagementConfig,
+        dataset_name: selectedDataset, // Include dataset for symbol list context
       };
       const response = await window.electronAPI.invoke('run-portfolio-backtest', payload);
 
@@ -287,10 +332,71 @@ const PortfolioBacktest: React.FC<PortfolioBacktestProps> = ({ scannerSpec }) =>
   return (
     <div className="portfolio-backtest">
       <h2>Portfolio Backtest</h2>
-      
-      {/* Symbol Selection */}
+
+      {/* Data Source Selection */}
       <div className="config-section">
-        <h3>Symbols</h3>
+        <h3>Data Source</h3>
+
+        {/* Dataset Selection */}
+        <div className="form-group">
+          <label>Dataset:</label>
+          <select
+            value={selectedDataset || ''}
+            onChange={(e) => setSelectedDataset(e.target.value)}
+            className="dataset-select"
+          >
+            <option value="">-- Select Dataset --</option>
+            {datasets.map(dataset => (
+              <option key={dataset.name} value={dataset.name}>
+                {dataset.name} ({dataset.symbol_count} symbols)
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Symbol List Selection */}
+        <div className="form-group">
+          <label>
+            <input
+              type="checkbox"
+              checked={useSymbolList}
+              onChange={(e) => {
+                setUseSymbolList(e.target.checked);
+                if (!e.target.checked) {
+                  setSelectedSymbolList(null);
+                  setPortfolioSymbols([]);
+                }
+              }}
+            />
+            Use Symbol List
+          </label>
+        </div>
+
+        {useSymbolList && (
+          <SymbolListSelector
+            datasetName={selectedDataset}
+            selectedList={selectedSymbolList}
+            onListSelect={(listName, symbols) => {
+              setSelectedSymbolList(listName);
+              setPortfolioSymbols(symbols);
+            }}
+            label="Portfolio Symbols"
+            showAllOption={true}
+          />
+        )}
+
+        {/* Show selected symbols info */}
+        {useSymbolList && selectedSymbolList && portfolioSymbols.length > 0 && (
+          <div className="info-box">
+            Using symbol list "{selectedSymbolList}" with {portfolioSymbols.length} symbols
+          </div>
+        )}
+      </div>
+
+      {/* Symbol Selection (when not using symbol list) */}
+      {!useSymbolList && (
+        <div className="config-section">
+          <h3>Symbols</h3>
         <div className="symbols-list">
           {symbols.map((symbol, index) => (
             <div key={index} className="symbol-row">
@@ -316,7 +422,8 @@ const PortfolioBacktest: React.FC<PortfolioBacktestProps> = ({ scannerSpec }) =>
         <button onClick={addSymbol} className="btn-add">
           + Add Symbol
         </button>
-      </div>
+        </div>
+      )}
 
       {/* Allocation Configuration */}
       <div className="config-section">
@@ -472,7 +579,9 @@ const PortfolioBacktest: React.FC<PortfolioBacktestProps> = ({ scannerSpec }) =>
       <div className="actions">
         <button
           onClick={runPortfolioBacktest}
-          disabled={loading || symbols.filter(s => s.trim()).length === 0}
+          disabled={loading ||
+            (useSymbolList && (!selectedDataset || !selectedSymbolList)) ||
+            (!useSymbolList && symbols.filter(s => s.trim()).length === 0)}
           className="btn-run"
         >
           {loading ? 'Running...' : 'Run Portfolio Backtest'}

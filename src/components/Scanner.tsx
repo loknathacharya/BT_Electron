@@ -282,6 +282,38 @@ const Scanner: React.FC = () => {
     fetchDatasets();
   }, []);
 
+  // Load last used dataset and symbol list from localStorage on mount
+  useEffect(() => {
+    const lastDataset = localStorage.getItem('scanner_last_dataset');
+    const lastSymbolList = localStorage.getItem('scanner_last_symbol_list');
+    
+    if (lastDataset && datasets.some(ds => ds.name === lastDataset)) {
+      setSelectedDataset(lastDataset);
+      setUniverseMode('SAVED_LIST');
+      if (lastSymbolList) {
+        setSelectedSavedList(lastSymbolList);
+      }
+    }
+  }, [datasets]);
+
+  // Save selectedDataset to localStorage
+  useEffect(() => {
+    if (selectedDataset) {
+      localStorage.setItem('scanner_last_dataset', selectedDataset);
+    } else {
+      localStorage.removeItem('scanner_last_dataset');
+    }
+  }, [selectedDataset]);
+
+  // Save selectedSavedList to localStorage
+  useEffect(() => {
+    if (selectedSavedList) {
+      localStorage.setItem('scanner_last_symbol_list', selectedSavedList);
+    } else {
+      localStorage.removeItem('scanner_last_symbol_list');
+    }
+  }, [selectedSavedList]);
+
   const openPreview = async (symbol: string) => {
     setPreviewSymbol(symbol);
     setPreviewOpen(true);
