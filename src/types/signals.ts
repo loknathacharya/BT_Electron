@@ -117,3 +117,63 @@ export interface DatasetValidationResponse extends ApiResponse {
   symbols?: string[];
 }
 
+// Expression Engine types
+export type ExpressionOperator = 
+  | '>' | '<' | '>=' | '<=' | '==' | '!='           // Comparison operators
+  | 'crosses_above' | 'crosses_below'                // Special operators
+  | 'and' | 'or';                                    // Logical operators
+
+export type ExpressionNodeType = 'comparison' | 'logical' | 'special';
+
+export interface ExpressionAST {
+  type: ExpressionNodeType;
+  operator: ExpressionOperator;
+  left: string | ExpressionAST;
+  right: string | ExpressionAST;
+}
+
+export interface ParseExpressionResult {
+  valid: boolean;
+  ast?: ExpressionAST;
+  error?: string;
+  tokens?: string[];
+}
+
+export interface ValidateExpressionResult {
+  valid: boolean;
+  error?: string;
+  warnings?: string[];
+  required_indicators?: string[];
+  data_available?: boolean;
+}
+
+export interface EvaluateExpressionResult {
+  result: boolean;
+  error?: string;
+  values?: Record<string, number>;
+}
+
+export interface EvaluateExitCriteriaResult {
+  exit: boolean;
+  triggered_by: string[];
+  values: Record<string, number>;
+}
+
+// Expression API request types
+export interface ParseExpressionRequest {
+  expression: string;
+}
+
+export interface ValidateExpressionRequest {
+  expression: string;
+  dataset_name?: string;
+  symbol?: string;
+}
+
+export interface EvaluateExpressionRequest {
+  expression: string;
+  dataset_name: string;
+  symbol: string;
+  timestamp?: string;
+}
+

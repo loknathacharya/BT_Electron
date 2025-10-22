@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import ScannerBuilder from './ScannerBuilder';
 import { BuilderTree, treeToFilters } from './scannerBuilderModel';
 import { useSymbolLists } from '../hooks/useSymbolLists';
+import { SaveSignalModal } from './signals/SaveSignalModal';
 
 type AttrName = 'open' | 'high' | 'low' | 'close' | 'volume';
 
@@ -126,6 +127,10 @@ const Scanner: React.FC = () => {
   const [dslParse, setDslParse] = useState<{ ok: boolean; spec?: any; error?: string; pos?: number; token?: any } | null>(null);
   const [backtestMode, setBacktestMode] = useState<boolean>(false);
   const [backtestPerSymbolCap, setBacktestPerSymbolCap] = useState<number>(500);
+  
+  // Signal saving state
+  const [saveSignalModalOpen, setSaveSignalModalOpen] = useState(false);
+  const [selectedResultForSignal, setSelectedResultForSignal] = useState<any>(null);
 
   // Simple in-memory cache for parsed DSL
   const dslCacheRef = React.useRef<Map<string, any>>(new Map());
@@ -341,6 +346,18 @@ const Scanner: React.FC = () => {
   const viewInDataManagement = (symbol: string) => {
     // Navigate to data management and pass symbol as query param
     navigate(`/data-management?symbol=${encodeURIComponent(symbol)}`);
+  };
+
+  const openSaveSignalModal = (scanResult: any) => {
+    setSelectedResultForSignal(scanResult);
+    setSaveSignalModalOpen(true);
+  };
+
+  const handleSignalSaved = () => {
+    setSaveSignalModalOpen(false);
+    setSelectedResultForSignal(null);
+    // Optionally show a success message
+    alert('Signal saved successfully!');
   };
 
   return (
@@ -773,9 +790,19 @@ const Scanner: React.FC = () => {
                         )}
                       </td>
                       <td style={{ padding: '8px 10px', borderBottom: '1px solid #eee' }}>
-                        <div style={{ display: 'flex', gap: 8 }}>
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                           <button className="btn btn-secondary" onClick={() => openPreview(r.symbol)}>Quick Preview</button>
                           <button className="btn" onClick={() => viewInDataManagement(r.symbol)}>View in Data Management</button>
+                          {!isBacktest && (
+                            <button 
+                              className="btn" 
+                              onClick={() => openSaveSignalModal(r)}
+                              style={{ background: '#4caf50', color: 'white', border: 'none' }}
+                              title="Save this result as a signal"
+                            >
+                              💾 Save as Signal
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -838,6 +865,21 @@ const Scanner: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Save Signal Modal */}
+      {saveSignalModalOpen && selectedResultForSignal && (
+        <SaveSignalModal
+          isOpen={saveSignalModalOpen}
+          scannerResult={selectedResultForSignal}
+          scannerSpec={useBuilder ? builderTree : filters}
+          datasetName={selectedDataset || ''}
+          onClose={() => {
+            setSaveSignalModalOpen(false);
+            setSelectedResultForSignal(null);
+          }}
+          onSuccess={handleSignalSaved}
+        />
       )}
     </div>
   );

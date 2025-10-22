@@ -35,6 +35,436 @@ except Exception:
     # Non-fatal; fallback imports may still work when tests run from repo root
     pass
 
+
+class ExpressionEngine:
+    """Parse, validate, and evaluate trading signal expressions.
+    
+    Supports expressions like:
+        'RSI(14) > 70'
+        'SMA(close, 20) crosses_above SMA(close, 50)'
+        '(RSI(14) < 30) and (close > SMA(close, 50))'
+    
+    Operators: >, <, >=, <=, ==, !=, crosses_above, crosses_below, and, or
+    """
+    
+    # Supported operators and functions
+    COMPARISON_OPS = ['>=', '<=', '>', '<', '==', '!=']
+    SPECIAL_OPS = ['crosses_above', 'crosses_below']
+    LOGICAL_OPS = ['and', 'or']
+    ALL_OPS = COMPARISON_OPS + SPECIAL_OPS + LOGICAL_OPS
+    
+    # Common indicators (can be extended)
+    KNOWN_INDICATORS = [
+        'RSI', 'SMA', 'EMA', 'MACD', 'BB', 'ATR', 'ADX', 'Stochastic',
+        'close', 'open', 'high', 'low', 'volume'
+    ]
+    
+    def __init__(self):
+        self.last_error = None
+    
+    def parse_expression(self, expr: str) -> dict:
+        """Parse expression string into structured format.
+        
+        Args:
+            expr: Expression string like 'RSI(14) > 70'
+        
+        Returns:
+            {
+                'valid': bool,
+                'ast': {
+                    'type': 'comparison' | 'logical' | 'special',
+                    'operator': str,
+                    'left': str | dict,
+                    'right': str | dict
+                },
+                'error': str (if invalid),
+                'tokens': [str]  # For debugging
+            }
+        """
+        try:
+            expr = expr.strip()
+            if not expr:
+                return {'valid': False, 'error': 'Empty expression'}
+            
+            # Handle parentheses and logical operators (simplified)
+            if ' and ' in expr.lower() or ' or ' in expr.lower():
+                return self._parse_logical_expression(expr)
+            
+            # Handle special operators (crosses)
+            for op in self.SPECIAL_OPS:
+                if op in expr:
+                    return self._parse_special_operator(expr, op)
+            
+            # Handle comparison operators
+            for op in self.COMPARISON_OPS:
+                if op in expr:
+                    parts = expr.split(op, 1)
+                    if len(parts) == 2:
+                        left = parts[0].strip()
+                        right = parts[1].strip()
+                        return {
+                            'valid': True,
+                            'ast': {
+                                'type': 'comparison',
+                                'operator': op,
+                                'left': left,
+                                'right': right
+                            },
+                            'tokens': [left, op, right]
+                        }
+            
+            return {
+                'valid': False,
+                'error': f'No recognized operator found in expression: {expr}'
+            }
+            
+        except Exception as e:
+            return {'valid': False, 'error': str(e)}
+    
+    def _parse_logical_expression(self, expr: str) -> dict:
+        """Parse expressions with 'and' or 'or'."""
+        # Simple implementation: split on first logical operator
+        expr_lower = expr.lower()
+        
+        if ' and ' in expr_lower:
+            parts = expr.split(' and ', 1)
+            op = 'and'
+        elif ' or ' in expr_lower:
+            parts = expr.split(' or ', 1)
+            op = 'or'
+        else:
+            return {'valid': False, 'error': 'No logical operator found'}
+        
+        if len(parts) != 2:
+            return {'valid': False, 'error': 'Invalid logical expression structure'}
+        
+        # Recursively parse left and right
+        left_ast = self.parse_expression(parts[0].strip('() '))
+        right_ast = self.parse_expression(parts[1].strip('() '))
+        
+        if not left_ast.get('valid') or not right_ast.get('valid'):
+            return {
+                'valid': False,
+                'error': f"Invalid sub-expression: {left_ast.get('error') or right_ast.get('error')}"
+            }
+        
+        return {
+            'valid': True,
+            'ast': {
+                'type': 'logical',
+                'operator': op,
+                'left': left_ast['ast'],
+                'right': right_ast['ast']
+            },
+            'tokens': [parts[0], op, parts[1]]
+        }
+    
+    def _parse_special_operator(self, expr: str, op: str) -> dict:
+        """Parse crosses_above/crosses_below operators."""
+        parts = expr.split(op, 1)
+        if len(parts) != 2:
+            return {'valid': False, 'error': f'Invalid {op} expression'}
+        
+        left = parts[0].strip()
+        right = parts[1].strip()
+        
+        return {
+            'valid': True,
+            'ast': {
+                'type': 'special',
+                'operator': op,
+                'left': left,
+                'right': right
+            },
+            'tokens': [left, op, right]
+        }
+    
+    def validate_expression(self, expr: str, dataset_name: str = None, 
+                          symbol: str = None, db_service=None) -> dict:
+        """Validate expression syntax and check if indicators are available.
+        
+        Args:
+            expr: Expression to validate
+            dataset_name: Optional dataset to check data availability
+            symbol: Optional symbol to check data availability
+            db_service: DatabaseService instance for data checks
+        
+        Returns:
+            {
+                'valid': bool,
+                'error': str (if invalid),
+                'warnings': [str],
+                'required_indicators': [str],
+                'data_available': bool (if dataset/symbol provided)
+            }
+        """
+        # First parse
+        parse_result = self.parse_expression(expr)
+        if not parse_result.get('valid'):
+            return {
+                'valid': False,
+                'error': parse_result.get('error', 'Unknown parse error')
+            }
+        
+        # Extract required indicators from AST
+        required_indicators = self._extract_indicators(parse_result['ast'])
+        
+        warnings = []
+        
+        # Check if indicators are recognized
+        for indicator in required_indicators:
+            if not any(known in indicator for known in self.KNOWN_INDICATORS):
+                warnings.append(f"Unrecognized indicator: {indicator}")
+        
+        result = {
+            'valid': True,
+            'required_indicators': required_indicators,
+            'warnings': warnings
+        }
+        
+        # Optional: Check data availability
+        if dataset_name and symbol and db_service:
+            try:
+                # Check if we have data for this symbol in dataset
+                data_available = db_service.validate_dataset_exists(dataset_name)
+                if data_available:
+                    symbols = db_service.get_dataset_symbols(dataset_name)
+                    data_available = symbol in symbols
+                
+                result['data_available'] = data_available
+                if not data_available:
+                    warnings.append(f"No data available for {symbol} in {dataset_name}")
+            except Exception as e:
+                warnings.append(f"Could not verify data availability: {e}")
+        
+        result['warnings'] = warnings
+        return result
+    
+    def _extract_indicators(self, ast: dict) -> list[str]:
+        """Recursively extract indicator names from AST."""
+        indicators = []
+        
+        if ast['type'] == 'logical':
+            indicators.extend(self._extract_indicators(ast['left']))
+            indicators.extend(self._extract_indicators(ast['right']))
+        else:
+            # Extract from left and right operands
+            for operand in [ast.get('left'), ast.get('right')]:
+                if isinstance(operand, str):
+                    # Check if it's an indicator call (has parentheses)
+                    if '(' in operand:
+                        indicator_name = operand.split('(')[0].strip()
+                        indicators.append(operand)  # Keep full call
+                    elif operand in self.KNOWN_INDICATORS:
+                        indicators.append(operand)
+                elif isinstance(operand, dict):
+                    indicators.extend(self._extract_indicators(operand))
+        
+        return list(set(indicators))  # Remove duplicates
+    
+    def evaluate_expression(self, expr: str, data: pd.DataFrame, 
+                          timestamp: str = None, row_index: int = None) -> dict:
+        """Evaluate expression at specific point in time.
+        
+        Args:
+            expr: Expression to evaluate
+            data: DataFrame with indicator columns
+            timestamp: ISO8601 timestamp (if provided, finds matching row)
+            row_index: Direct row index (if provided, uses this)
+        
+        Returns:
+            {
+                'result': bool,
+                'error': str (if evaluation failed),
+                'values': dict  # Values used in evaluation
+            }
+        """
+        try:
+            # Parse expression first
+            parse_result = self.parse_expression(expr)
+            if not parse_result.get('valid'):
+                return {
+                    'result': False,
+                    'error': f"Invalid expression: {parse_result.get('error')}"
+                }
+            
+            # Determine row to evaluate
+            if row_index is not None:
+                if row_index < 0 or row_index >= len(data):
+                    return {'result': False, 'error': 'Row index out of bounds'}
+                idx = row_index
+            elif timestamp:
+                # Find row by timestamp
+                if 'timestamp' in data.columns:
+                    matching = data[data['timestamp'] == timestamp]
+                    if len(matching) == 0:
+                        return {'result': False, 'error': f'No data for timestamp {timestamp}'}
+                    idx = matching.index[0]
+                else:
+                    return {'result': False, 'error': 'DataFrame has no timestamp column'}
+            else:
+                # Use last row
+                idx = len(data) - 1
+            
+            # Evaluate AST
+            result, values = self._evaluate_ast(parse_result['ast'], data, idx)
+            
+            return {
+                'result': result,
+                'values': values
+            }
+            
+        except Exception as e:
+            return {'result': False, 'error': str(e)}
+    
+    def _evaluate_ast(self, ast: dict, data: pd.DataFrame, idx: int) -> tuple[bool, dict]:
+        """Recursively evaluate AST node."""
+        values = {}
+        
+        if ast['type'] == 'logical':
+            left_result, left_values = self._evaluate_ast(ast['left'], data, idx)
+            right_result, right_values = self._evaluate_ast(ast['right'], data, idx)
+            
+            values.update(left_values)
+            values.update(right_values)
+            
+            if ast['operator'] == 'and':
+                return left_result and right_result, values
+            elif ast['operator'] == 'or':
+                return left_result or right_result, values
+        
+        elif ast['type'] == 'comparison':
+            left_val = self._get_value(ast['left'], data, idx)
+            right_val = self._get_value(ast['right'], data, idx)
+            
+            values[ast['left']] = left_val
+            values[ast['right']] = right_val
+            
+            op = ast['operator']
+            if op == '>':
+                return left_val > right_val, values
+            elif op == '<':
+                return left_val < right_val, values
+            elif op == '>=':
+                return left_val >= right_val, values
+            elif op == '<=':
+                return left_val <= right_val, values
+            elif op == '==':
+                return left_val == right_val, values
+            elif op == '!=':
+                return left_val != right_val, values
+        
+        elif ast['type'] == 'special':
+            if ast['operator'] in ['crosses_above', 'crosses_below']:
+                return self._evaluate_cross(ast, data, idx)
+        
+        return False, values
+    
+    def _get_value(self, operand: str, data: pd.DataFrame, idx: int) -> float:
+        """Extract value from operand (column name or literal number)."""
+        operand = operand.strip()
+        
+        # Try as literal number
+        try:
+            return float(operand)
+        except ValueError:
+            pass
+        
+        # Try as column name (direct or indicator call)
+        # Simple mapping: RSI(14) -> RSI_14, SMA(close, 20) -> SMA_close_20
+        col_name = operand.replace('(', '_').replace(')', '').replace(', ', '_').replace(',', '_')
+        
+        if col_name in data.columns:
+            return float(data.iloc[idx][col_name])
+        
+        # Try original name
+        if operand in data.columns:
+            return float(data.iloc[idx][operand])
+        
+        raise ValueError(f"Column not found: {operand} (tried {col_name})")
+    
+    def _evaluate_cross(self, ast: dict, data: pd.DataFrame, idx: int) -> tuple[bool, dict]:
+        """Evaluate crosses_above/crosses_below."""
+        if idx < 1:
+            # Need at least 2 bars to detect cross
+            return False, {}
+        
+        left = ast['left']
+        right = ast['right']
+        
+        # Get current and previous values
+        curr_left = self._get_value(left, data, idx)
+        curr_right = self._get_value(right, data, idx)
+        prev_left = self._get_value(left, data, idx - 1)
+        prev_right = self._get_value(right, data, idx - 1)
+        
+        values = {
+            f'{left}_current': curr_left,
+            f'{right}_current': curr_right,
+            f'{left}_previous': prev_left,
+            f'{right}_previous': prev_right
+        }
+        
+        if ast['operator'] == 'crosses_above':
+            # Was below, now above
+            result = prev_left <= prev_right and curr_left > curr_right
+        elif ast['operator'] == 'crosses_below':
+            # Was above, now below
+            result = prev_left >= prev_right and curr_left < curr_right
+        else:
+            result = False
+        
+        return result, values
+    
+    def evaluate_exit_criteria(self, criteria_list: list[str], data: pd.DataFrame,
+                              timestamp: str = None, row_index: int = None,
+                              logic: str = 'any') -> dict:
+        """Evaluate multiple exit expressions with AND/OR logic.
+        
+        Args:
+            criteria_list: List of expression strings
+            data: DataFrame with indicator data
+            timestamp: Optional timestamp to evaluate at
+            row_index: Optional row index to evaluate at
+            logic: 'any' (OR) or 'all' (AND)
+        
+        Returns:
+            {
+                'exit': bool,
+                'triggered_by': [str],  # Expressions that evaluated to True
+                'values': dict  # All values from all expressions
+            }
+        """
+        if not criteria_list:
+            return {'exit': False, 'triggered_by': [], 'values': {}}
+        
+        triggered = []
+        all_values = {}
+        
+        for expr in criteria_list:
+            result = self.evaluate_expression(expr, data, timestamp, row_index)
+            
+            if result.get('result'):
+                triggered.append(expr)
+            
+            if 'values' in result:
+                all_values.update(result['values'])
+        
+        # Apply logic
+        if logic == 'any':
+            should_exit = len(triggered) > 0
+        elif logic == 'all':
+            should_exit = len(triggered) == len(criteria_list)
+        else:
+            should_exit = False
+        
+        return {
+            'exit': should_exit,
+            'triggered_by': triggered,
+            'values': all_values
+        }
+
+
 class DatabaseService:
     """SQLite database service for trading data with separate user and market databases"""
 
@@ -3108,6 +3538,71 @@ def handle_request(request, db_service_override=None):
                 return {'success': True, 'symbols': symbols, 'requestId': request_id}
             except Exception as e:
                 return {'error': f'Failed to get dataset symbols: {e}', 'requestId': request_id}
+        
+        # Expression Engine endpoints
+        elif request.get('action') == 'parse_expression':
+            try:
+                data = request.get('data', {}) or {}
+                expression = data.get('expression')
+                if not expression:
+                    return {'error': 'expression is required', 'requestId': request_id}
+                
+                engine = ExpressionEngine()
+                result = engine.parse_expression(expression)
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to parse expression: {e}', 'requestId': request_id}
+        
+        elif request.get('action') == 'validate_expression':
+            try:
+                data = request.get('data', {}) or {}
+                expression = data.get('expression')
+                if not expression:
+                    return {'error': 'expression is required', 'requestId': request_id}
+                
+                dataset_name = data.get('dataset_name')
+                symbol = data.get('symbol')
+                
+                engine = ExpressionEngine()
+                result = engine.validate_expression(
+                    expression, 
+                    dataset_name=dataset_name, 
+                    symbol=symbol,
+                    db_service=current_db_service
+                )
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to validate expression: {e}', 'requestId': request_id}
+        
+        elif request.get('action') == 'evaluate_expression':
+            try:
+                data = request.get('data', {}) or {}
+                expression = data.get('expression')
+                dataset_name = data.get('dataset_name')
+                symbol = data.get('symbol')
+                timestamp = data.get('timestamp')
+                
+                if not all([expression, dataset_name, symbol]):
+                    return {'error': 'expression, dataset_name, and symbol are required', 'requestId': request_id}
+                
+                # Load data for symbol
+                price_data = current_db_service.get_price_data(dataset_name, symbol)
+                if not price_data.get('success'):
+                    return {'error': f"Failed to load data: {price_data.get('error')}", 'requestId': request_id}
+                
+                # Convert to DataFrame
+                df = pd.DataFrame(price_data['data'])
+                if df.empty:
+                    return {'error': 'No data available for evaluation', 'requestId': request_id}
+                
+                engine = ExpressionEngine()
+                result = engine.evaluate_expression(expression, df, timestamp=timestamp)
+                result['requestId'] = request_id
+                return result
+            except Exception as e:
+                return {'error': f'Failed to evaluate expression: {e}', 'requestId': request_id}
         
         elif request.get('action') == 'get-dataset':
             """Get specific dataset by name"""

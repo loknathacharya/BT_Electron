@@ -10,6 +10,8 @@ import PortfolioBacktest from './components/PortfolioBacktest';
 import { WalkForwardAnalysis } from './components/WalkForwardAnalysis';
 import BackupRecovery from './components/BackupRecovery';
 import Breadcrumbs from './components/Breadcrumbs';
+import { SignalsList } from './components/signals/SignalsList';
+import { StrategyManager } from './components/signals/StrategyManager';
 
 function Navigation() {
   const location = useLocation();
@@ -17,6 +19,8 @@ function Navigation() {
   const navItems = [
     { path: '/', label: 'Data Management' },
     { path: '/scanner', label: 'Scanner' },
+    { path: '/signals', label: 'Signals' },
+    { path: '/strategies', label: 'Strategies' },
     { path: '/backtest', label: 'Backtest' },
     { path: '/portfolio', label: 'Portfolio' },
     { path: '/walk-forward', label: 'Walk-Forward' },
@@ -58,6 +62,8 @@ function AppContent() {
             {/* Import Data modal route — ViewResults handles showing modal based on location.pathname */}
             <Route path="/import" element={<ViewResults />} />
           <Route path="/scanner" element={<Scanner />} />
+          <Route path="/signals" element={<SignalsList />} />
+          <Route path="/strategies" element={<StrategyManager />} />
           <Route path="/backtest" element={<BacktestEngine />} />
           <Route path="/portfolio" element={<PortfolioBacktest scannerSpec={{}} />} />
           <Route path="/walk-forward" element={<WalkForwardAnalysis scannerSpec={{}} />} />
